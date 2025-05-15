@@ -1,0 +1,86 @@
+# IDE相关
+/.idea/
+/.cproject
+/.mxproject
+/.project
+/.vscode/
+*/.vscode/
+vendor_server/.vscode/
+vendor_client/.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+*/.devcontainer/
+vendor_server/.devcontainer/
+vendor_client/.devcontainer/
+
+# 构建和输出相关
+/build/
+*/build/
+/managed_components/
+*/managed_components/
+/dependencies/
+*/dependencies/
+sdkconfig
+*/sdkconfig
+sdkconfig.old
+*/sdkconfig.old
+/compile_commands.json
+*/compile_commands.json
+
+# ESP-IDF特定文件
+/components/app_update/
+/components/bootloader/
+/components/bt/
+/components/esptool_py/
+/components/lwip/
+
+# 日志和临时文件
+*.log
+.DS_Store
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# 二进制文件和生成文件
+*.o
+*.a
+*.d
+*.bin
+*.elf
+*.map
+*.hex
+*.dis
+*.dll
+*.so
+*.dylib
+
+# 系统和环境变量文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 临时文件
+/tmp/
+*/tmp/
+temp/
+*/temp/
+
+# ESP-IDF 特定的子文件夹忽略项
+*/flash_project_args
+*/flasher_args.json
+*.fw.bin
+
+# 子项目可能产生的缓存/临时目录
+vendor_server/esp-idf
+vendor_client/esp-idf
+*/sdkconfig.ci.*
+
+# 可能在运行时生成的特定文件
+*/.tmp_*
+*/.cache/
