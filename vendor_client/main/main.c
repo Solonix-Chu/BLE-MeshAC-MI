@@ -26,7 +26,7 @@
 #include "ble_mesh_example_nvs.h"
 #include "board.h"
 
-#define TAG "EXAMPLE"
+#define TAG "Client_Main"
 
 #define CID_ESP             0x02E5
 
