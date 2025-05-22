@@ -10,17 +10,20 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "iot_button.h"
+#include "ac_control.h"
+#include "mesh_common.h"
 
 #define TAG "BOARD"
 
 #define BUTTON_IO_NUM           0
 #define BUTTON_ACTIVE_LEVEL     0
 
-extern void example_ble_mesh_send_vendor_message(bool resend);
+// extern void example_ble_mesh_send_vendor_message(bool resend);
 
 static void button_tap_cb(void* arg)
 {
-    example_ble_mesh_send_vendor_message(false);
+    // example_ble_mesh_send_vendor_message(false);
+    ac_client_set_power(0x0005, AC_POWER_ON);
 }
 
 static void board_button_init(void)

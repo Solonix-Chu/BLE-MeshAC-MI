@@ -24,16 +24,19 @@
 
 #include "board.h"
 #include "ble_mesh_example_init.h"
+#include "mesh_common.h"
+#include "ac_control.h"
 
 #define TAG "EXAMPLE"
 
-#define CID_ESP     0x02E5
+#define CID_ESP     MY_COMPANY_ID
 
-#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT    0x0000
-#define ESP_BLE_MESH_VND_MODEL_ID_SERVER    0x0001
+#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT    MY_MODEL_ID_AC_CLIENT
+#define ESP_BLE_MESH_VND_MODEL_ID_SERVER    MY_MODEL_ID_AC_SERVER
+//TODO：替换宏为mesh_common.h中的宏
 
-#define ESP_BLE_MESH_VND_MODEL_OP_SEND      ESP_BLE_MESH_MODEL_OP_3(0x00, CID_ESP)
-#define ESP_BLE_MESH_VND_MODEL_OP_STATUS    ESP_BLE_MESH_MODEL_OP_3(0x01, CID_ESP)
+// #define ESP_BLE_MESH_VND_MODEL_OP_SEND      ESP_BLE_MESH_MODEL_OP_3(0x00, CID_ESP)
+// #define ESP_BLE_MESH_VND_MODEL_OP_STATUS    ESP_BLE_MESH_MODEL_OP_3(0x01, CID_ESP)
 
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN] = { 0x32, 0x10 };
 
@@ -60,14 +63,16 @@ static esp_ble_mesh_model_t root_models[] = {
     ESP_BLE_MESH_MODEL_CFG_SRV(&config_server),
 };
 
-static esp_ble_mesh_model_op_t vnd_op[] = {
-    ESP_BLE_MESH_MODEL_OP(ESP_BLE_MESH_VND_MODEL_OP_SEND, 2),
-    ESP_BLE_MESH_MODEL_OP_END,
-};
+// static esp_ble_mesh_model_op_t vnd_op[] = {
+//     ESP_BLE_MESH_MODEL_OP(ESP_BLE_MESH_VND_MODEL_OP_SEND, 2),
+//     ESP_BLE_MESH_MODEL_OP_END,
+// };
+
+extern esp_ble_mesh_model_op_t ac_server_op[];
 
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, ESP_BLE_MESH_VND_MODEL_ID_SERVER,
-    vnd_op, NULL, NULL),
+    ac_server_op, NULL, NULL),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -156,14 +161,15 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
 {
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        if (param->model_operation.opcode == ESP_BLE_MESH_VND_MODEL_OP_SEND) {
+        if (param->model_operation.opcode == AC_OP_SET_POWER) {
             uint16_t tid = *(uint16_t *)param->model_operation.msg;
             ESP_LOGI(TAG, "Recv 0x%06" PRIx32 ", tid 0x%04x", param->model_operation.opcode, tid);
+            // TODO: 处理接收到的控制命令
             esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
-                    param->model_operation.ctx, ESP_BLE_MESH_VND_MODEL_OP_STATUS,
+                    param->model_operation.ctx, AC_OP_POWER_STATUS,
                     sizeof(tid), (uint8_t *)&tid);
             if (err) {
-                ESP_LOGE(TAG, "Failed to send message 0x%06x", ESP_BLE_MESH_VND_MODEL_OP_STATUS);
+                ESP_LOGE(TAG, "Failed to send message 0x%06x", AC_OP_POWER_STATUS);
             }
         }
         break;
@@ -229,6 +235,7 @@ void app_main(void)
 
     ble_mesh_get_dev_uuid(dev_uuid);
 
+    ac_server_init();
     /* Initialize the Bluetooth Mesh Subsystem */
     err = ble_mesh_init();
     if (err) {

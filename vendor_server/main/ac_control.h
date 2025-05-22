@@ -1,4 +1,4 @@
-/* ac_control.h - Air Conditioner Bluetooth Mesh Client Control Interface */
+/* ac_control.h - Air Conditioner Bluetooth Mesh server Control Interface */
 
 #ifndef _AC_CONTROL_H_
 #define _AC_CONTROL_H_
@@ -26,11 +26,11 @@ struct esp_ble_mesh_key {
 };
 
 /**
- * @brief Initialize the AC client control interface
+ * @brief Initialize the AC server control interface
  * 
  * @return ESP_OK on success
  */
-esp_err_t ac_client_init(void);
+esp_err_t ac_server_init(void);
 
 /**
  * @brief Send power control message to server
@@ -39,7 +39,7 @@ esp_err_t ac_client_init(void);
  * @param power_state 0: OFF, 1: ON
  * @return ESP_OK on success
  */
-esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state);
+esp_err_t ac_server_set_power(uint8_t power_state);
 
 /**
  * @brief Get power status from server
@@ -47,7 +47,7 @@ esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state);
  * @param server_addr Server address
  * @return ESP_OK on success
  */
-esp_err_t ac_client_get_power(uint16_t server_addr);
+// esp_err_t ac_server_get_power(uint16_t server_addr);
 
 /**
  * @brief Send temperature control message to server
@@ -56,7 +56,7 @@ esp_err_t ac_client_get_power(uint16_t server_addr);
  * @param temperature Temperature value (16-30°C)
  * @return ESP_OK on success
  */
-esp_err_t ac_client_set_temperature(uint16_t server_addr, uint8_t temperature);
+esp_err_t ac_server_set_temperature(uint8_t temperature);
 
 /**
  * @brief Get temperature status from server
@@ -64,7 +64,7 @@ esp_err_t ac_client_set_temperature(uint16_t server_addr, uint8_t temperature);
  * @param server_addr Server address
  * @return ESP_OK on success
  */
-esp_err_t ac_client_get_temperature(uint16_t server_addr);
+// esp_err_t ac_server_get_temperature(uint16_t server_addr);
 
 /**
  * @brief Send mode control message to server
@@ -73,7 +73,7 @@ esp_err_t ac_client_get_temperature(uint16_t server_addr);
  * @param mode Mode value (0: Cool, 1: Heat, 2: Fan, 3: Dry, 4: Auto)
  * @return ESP_OK on success
  */
-esp_err_t ac_client_set_mode(uint16_t server_addr, uint8_t mode);
+esp_err_t ac_server_set_mode(uint8_t mode);
 
 /**
  * @brief Get mode status from server
@@ -81,7 +81,7 @@ esp_err_t ac_client_set_mode(uint16_t server_addr, uint8_t mode);
  * @param server_addr Server address
  * @return ESP_OK on success
  */
-esp_err_t ac_client_get_mode(uint16_t server_addr);
+// esp_err_t ac_server_get_mode(uint16_t server_addr);
 
 /**
  * @brief Send fan speed control message to server
@@ -90,7 +90,7 @@ esp_err_t ac_client_get_mode(uint16_t server_addr);
  * @param fan_speed Fan speed value (0: Auto, 1: Low, 2: Medium, 3: High)
  * @return ESP_OK on success
  */
-esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed);
+esp_err_t ac_server_set_fan_speed(uint8_t fan_speed);
 
 /**
  * @brief Get fan speed status from server
@@ -98,32 +98,23 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed);
  * @param server_addr Server address
  * @return ESP_OK on success
  */
-esp_err_t ac_client_get_fan_speed(uint16_t server_addr);
+// esp_err_t ac_server_get_fan_speed(uint16_t server_addr);
 
 /**
  * @brief AC status callback function type
  */
-typedef void (*ac_status_callback_t)(ac_status_type_t type, uint8_t value);
+typedef void (*ac_status_callback_t)(uint8_t value);
 
 /**
- * @brief Register AC status callback
+ * @brief Send all AC settings at once via Bluetooth
  * 
- * @param callback Callback function
+ * @param power Power state
+ * @param temperature Temperature value
+ * @param mode Mode value
+ * @param fan_speed Fan speed value
+ * @return ESP_OK on success
  */
-void ac_client_register_callback(ac_status_callback_t callback);
-
-/**
- * @brief Set network parameters for client messages
- *
- * @param net_idx Network index
- * @param app_idx Application index
- */
-void ac_client_set_network_params(uint16_t net_idx, uint16_t app_idx);
-
-/**
- * @brief Reset fail count for network messages
- */
-void ac_client_reset_fail_count(void);
+esp_err_t ac_server_set_all(uint8_t power, uint8_t temperature, uint8_t mode, uint8_t fan_speed);
 
 #ifdef __cplusplus
 }

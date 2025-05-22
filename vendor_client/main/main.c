@@ -25,10 +25,12 @@
 #include "ble_mesh_example_init.h"
 #include "ble_mesh_example_nvs.h"
 #include "board.h"
+#include "ac_control.h"
+#include "mesh_common.h"
 
 #define TAG "Client_Main"
 
-#define CID_ESP             0x02E5
+#define CID_ESP             MY_COMPANY_ID
 
 #define PROV_OWN_ADDR       0x0001
 
@@ -44,11 +46,15 @@
 #define COMP_DATA_1_OCTET(msg, offset)      (msg[offset])
 #define COMP_DATA_2_OCTET(msg, offset)      (msg[offset + 1] << 8 | msg[offset])
 
-#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT    0x0000
-#define ESP_BLE_MESH_VND_MODEL_ID_SERVER    0x0001
+#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT    MY_MODEL_ID_AC_CLIENT
+#define ESP_BLE_MESH_VND_MODEL_ID_SERVER    MY_MODEL_ID_AC_SERVER
+//TODO：替换宏为mesh_common.h中的宏
 
-#define ESP_BLE_MESH_VND_MODEL_OP_SEND      ESP_BLE_MESH_MODEL_OP_3(0x00, CID_ESP)
-#define ESP_BLE_MESH_VND_MODEL_OP_STATUS    ESP_BLE_MESH_MODEL_OP_3(0x01, CID_ESP)
+// #define ESP_BLE_MESH_VND_MODEL_OP_SEND      ESP_BLE_MESH_MODEL_OP_3(0x00, CID_ESP)
+// #define ESP_BLE_MESH_VND_MODEL_OP_STATUS    ESP_BLE_MESH_MODEL_OP_3(0x01, CID_ESP)
+
+extern esp_ble_mesh_model_op_t ac_client_op[];
+extern esp_ble_mesh_client_op_pair_t ac_client_op_pair[];
 
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN];
 
@@ -63,11 +69,8 @@ static struct example_info_store {
 static nvs_handle_t NVS_HANDLE;
 static const char * NVS_KEY = "vendor_client";
 
-static struct esp_ble_mesh_key {
-    uint16_t net_idx;
-    uint16_t app_idx;
-    uint8_t  app_key[ESP_BLE_MESH_OCTET16_LEN];
-} prov_key;
+// static struct esp_ble_mesh_key {
+struct esp_ble_mesh_key prov_key;
 
 static esp_ble_mesh_cfg_srv_t config_server = {
     /* 3 transmissions with 20ms interval */
@@ -85,19 +88,21 @@ static esp_ble_mesh_cfg_srv_t config_server = {
 
 static esp_ble_mesh_client_t config_client;
 
-static const esp_ble_mesh_client_op_pair_t vnd_op_pair[] = {
-    { ESP_BLE_MESH_VND_MODEL_OP_SEND, ESP_BLE_MESH_VND_MODEL_OP_STATUS },
-};
+// static const esp_ble_mesh_client_op_pair_t vnd_op_pair[] = {
+//     { ESP_BLE_MESH_VND_MODEL_OP_SEND, ESP_BLE_MESH_VND_MODEL_OP_STATUS },
+// };
 
-static esp_ble_mesh_client_t vendor_client = {
-    .op_pair_size = ARRAY_SIZE(vnd_op_pair),
-    .op_pair = vnd_op_pair,
-};
+// static esp_ble_mesh_client_t vendor_client = {
+//     .op_pair_size = 8,
+//     .op_pair = ac_client_op_pair,
+// };
 
-static esp_ble_mesh_model_op_t vnd_op[] = {
-    ESP_BLE_MESH_MODEL_OP(ESP_BLE_MESH_VND_MODEL_OP_STATUS, 2),
-    ESP_BLE_MESH_MODEL_OP_END,
-};
+extern esp_ble_mesh_client_t ac_client;
+
+// static esp_ble_mesh_model_op_t vnd_op[] = {
+//     ESP_BLE_MESH_MODEL_OP(ESP_BLE_MESH_VND_MODEL_OP_STATUS, 2),
+//     ESP_BLE_MESH_MODEL_OP_END,
+// };
 
 static esp_ble_mesh_model_t root_models[] = {
     ESP_BLE_MESH_MODEL_CFG_SRV(&config_server),
@@ -106,7 +111,7 @@ static esp_ble_mesh_model_t root_models[] = {
 
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, ESP_BLE_MESH_VND_MODEL_ID_CLIENT,
-    vnd_op, NULL, &vendor_client),
+    ac_client_op, NULL, &ac_client),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -451,64 +456,64 @@ static void example_ble_mesh_config_client_cb(esp_ble_mesh_cfg_client_cb_event_t
     }
 }
 
-void example_ble_mesh_send_vendor_message(bool resend)
-{
-    esp_ble_mesh_msg_ctx_t ctx = {0};
-    uint32_t opcode;
-    esp_err_t err;
+// void example_ble_mesh_send_vendor_message(bool resend)
+// {
+//     esp_ble_mesh_msg_ctx_t ctx = {0};
+//     uint32_t opcode;
+//     esp_err_t err;
 
-    ctx.net_idx = prov_key.net_idx;
-    ctx.app_idx = prov_key.app_idx;
-    ctx.addr = store.server_addr;
-    ctx.send_ttl = MSG_SEND_TTL;
-    opcode = ESP_BLE_MESH_VND_MODEL_OP_SEND;
+//     ctx.net_idx = prov_key.net_idx;
+//     ctx.app_idx = prov_key.app_idx;
+//     ctx.addr = store.server_addr;
+//     ctx.send_ttl = MSG_SEND_TTL;
+//     opcode = ESP_BLE_MESH_VND_MODEL_OP_SEND;
 
-    if (resend == false) {
-        store.vnd_tid++;
-    }
+//     if (resend == false) {
+//         store.vnd_tid++;
+//     }
+//     //TODO: 为简化实现，暂时改为无需应答。之后需要添加对应的应答机制和超时重传
+//     err = esp_ble_mesh_client_model_send_msg(vendor_client.model, &ctx, opcode,
+//             sizeof(store.vnd_tid), (uint8_t *)&store.vnd_tid, MSG_TIMEOUT, false, MSG_ROLE);
+//     if (err != ESP_OK) {
+//         ESP_LOGE(TAG, "Failed to send vendor message 0x%06" PRIx32, opcode);
+//         return;
+//     }
 
-    err = esp_ble_mesh_client_model_send_msg(vendor_client.model, &ctx, opcode,
-            sizeof(store.vnd_tid), (uint8_t *)&store.vnd_tid, MSG_TIMEOUT, true, MSG_ROLE);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send vendor message 0x%06" PRIx32, opcode);
-        return;
-    }
+//     mesh_example_info_store(); /* Store proper mesh example info */
+// }
 
-    mesh_example_info_store(); /* Store proper mesh example info */
-}
+// static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
+//                                              esp_ble_mesh_model_cb_param_t *param)
+// {
+//     static int64_t start_time;
 
-static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
-                                             esp_ble_mesh_model_cb_param_t *param)
-{
-    static int64_t start_time;
-
-    switch (event) {
-    case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        if (param->model_operation.opcode == ESP_BLE_MESH_VND_MODEL_OP_STATUS) {
-            int64_t end_time = esp_timer_get_time();
-            ESP_LOGI(TAG, "Recv 0x06%" PRIx32 ", tid 0x%04x, time %lldus",
-                param->model_operation.opcode, store.vnd_tid, end_time - start_time);
-        }
-        break;
-    case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
-        if (param->model_send_comp.err_code) {
-            ESP_LOGE(TAG, "Failed to send message 0x%06" PRIx32, param->model_send_comp.opcode);
-            break;
-        }
-        start_time = esp_timer_get_time();
-        ESP_LOGI(TAG, "Send 0x%06" PRIx32, param->model_send_comp.opcode);
-        break;
-    case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
-        ESP_LOGI(TAG, "Receive publish message 0x%06" PRIx32, param->client_recv_publish_msg.opcode);
-        break;
-    case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
-        ESP_LOGW(TAG, "Client message 0x%06" PRIx32 " timeout", param->client_send_timeout.opcode);
-        example_ble_mesh_send_vendor_message(true);
-        break;
-    default:
-        break;
-    }
-}
+//     switch (event) {
+//     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
+//         if (param->model_operation.opcode == ESP_BLE_MESH_VND_MODEL_OP_STATUS) {
+//             int64_t end_time = esp_timer_get_time();
+//             ESP_LOGI(TAG, "Recv 0x06%" PRIx32 ", tid 0x%04x, time %lldus",
+//                 param->model_operation.opcode, store.vnd_tid, end_time - start_time);
+//         }
+//         break;
+//     case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
+//         if (param->model_send_comp.err_code) {
+//             ESP_LOGE(TAG, "Failed to send message 0x%06" PRIx32, param->model_send_comp.opcode);
+//             break;
+//         }
+//         start_time = esp_timer_get_time();
+//         ESP_LOGI(TAG, "Send 0x%06" PRIx32, param->model_send_comp.opcode);
+//         break;
+//     case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
+//         ESP_LOGI(TAG, "Receive publish message 0x%06" PRIx32, param->client_recv_publish_msg.opcode);
+//         break;
+//     case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
+//         ESP_LOGW(TAG, "Client message 0x%06" PRIx32 " timeout", param->client_send_timeout.opcode);
+//         example_ble_mesh_send_vendor_message(true);
+//         break;
+//     default:
+//         break;
+//     }
+// }
 
 static esp_err_t ble_mesh_init(void)
 {
@@ -521,7 +526,7 @@ static esp_err_t ble_mesh_init(void)
 
     esp_ble_mesh_register_prov_callback(example_ble_mesh_provisioning_cb);
     esp_ble_mesh_register_config_client_callback(example_ble_mesh_config_client_cb);
-    esp_ble_mesh_register_custom_model_callback(example_ble_mesh_custom_model_cb);
+    // esp_ble_mesh_register_custom_model_callback(example_ble_mesh_custom_model_cb);
 
     err = esp_ble_mesh_init(&provision, &composition);
     if (err != ESP_OK) {
@@ -587,6 +592,7 @@ void app_main(void)
 
     ble_mesh_get_dev_uuid(dev_uuid);
 
+    ac_client_init();
     /* Initialize the Bluetooth Mesh Subsystem */
     err = ble_mesh_init();
     if (err != ESP_OK) {
