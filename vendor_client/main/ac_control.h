@@ -9,6 +9,8 @@ extern "C" {
 
 #include "esp_err.h"
 #include <stdint.h>
+#include "esp_ble_mesh_defs.h" // Added for BLE types
+#include "ble_mesh_example_nvs.h" // Added for nvs_handle_t
 
 /* AC状态类型枚举 */
 typedef enum {
@@ -18,15 +20,16 @@ typedef enum {
     AC_STATUS_FAN_SPEED = 3,    /* 风速状态 */
 } ac_status_type_t;
 
-struct esp_ble_mesh_key {
-    uint16_t net_idx;
-    uint16_t app_idx;
-    // uint8_t  app_key[ESP_BLE_MESH_OCTET16_LEN];
-    uint8_t  app_key[16]; // 使用16字节的app_key
-};
+/**
+ * @brief Initialize the AC client control interface and BLE stack
+ * 
+ * @param status_cb Callback function for AC status updates
+ * @return ESP_OK on success
+ */
+// esp_err_t ac_ble_mesh_init(ac_status_callback_t status_cb);
 
 /**
- * @brief Initialize the AC client control interface
+ * @brief Initialize the AC client specific models and callbacks (legacy, might be merged into ac_ble_mesh_init)
  * 
  * @return ESP_OK on success
  */
@@ -101,29 +104,28 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed);
 esp_err_t ac_client_get_fan_speed(uint16_t server_addr);
 
 /**
- * @brief AC status callback function type
+ * @brief Stores relevant BLE mesh information to NVS.
  */
-typedef void (*ac_status_callback_t)(ac_status_type_t type, uint8_t value);
+void ac_ble_mesh_store_info(void);
 
 /**
- * @brief Register AC status callback
- * 
- * @param callback Callback function
+ * @brief Restores relevant BLE mesh information from NVS.
  */
-void ac_client_register_callback(ac_status_callback_t callback);
+void ac_ble_mesh_restore_info(void);
 
 /**
- * @brief Set network parameters for client messages
+ * @brief Gets the currently stored server address.
  *
- * @param net_idx Network index
- * @param app_idx Application index
+ * @return uint16_t Server unicast address or ESP_BLE_MESH_ADDR_UNASSIGNED.
  */
-void ac_client_set_network_params(uint16_t net_idx, uint16_t app_idx);
+uint16_t ac_get_server_addr(void);
 
 /**
- * @brief Reset fail count for network messages
+ * @brief Sets the server address.
+ *
+ * @param addr Server unicast address.
  */
-void ac_client_reset_fail_count(void);
+void ac_set_server_addr(uint16_t addr);
 
 #ifdef __cplusplus
 }
