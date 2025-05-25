@@ -62,4 +62,15 @@ void app_main(void)
     // } else {
     //     ESP_LOGI(TAG, "No server provisioned yet. Waiting for provisioning...");
     // }
+
+    while (1) {
+        ESP_LOGI(TAG, "num_servers: %d", ac_get_num_servers());
+        for (uint8_t i = 0; i < ac_get_num_servers(); i++) {
+            uint16_t add = ac_get_server_addr_by_index(i);
+            ESP_LOGI(TAG, "Server[%d] addr: 0x%04x, online: %s", 
+                     i, add,
+                     ac_is_server_online(add) ? "yes" : "no");
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
 }

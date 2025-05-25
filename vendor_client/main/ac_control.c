@@ -27,6 +27,8 @@
 #define APP_KEY_IDX         0x0000
 #define APP_KEY_OCTET       0x12
 
+#define MAX_CONSECUTIVE_TIMEOUTS 3 // Define for timeout logic
+
 #define COMP_DATA_1_OCTET(msg, offset)      (msg[offset])
 #define COMP_DATA_2_OCTET(msg, offset)      (msg[offset + 1] << 8 | msg[offset])
 
@@ -41,11 +43,19 @@ static struct esp_ble_mesh_key {
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN];
 // static uint16_t client_primary_addr;
 
+/* Structure to hold information about each managed AC server */
+typedef struct {
+    uint16_t addr;                          /* Server unicast address */
+    bool is_online;                         /* Online status */
+    uint8_t consecutive_timeouts;           /* Count of consecutive send timeouts */
+} ac_server_info_t;
+
 static struct example_info_store {
-    uint16_t server_addr;   /* Vendor server unicast address */
-    uint16_t vnd_tid;       /* TID contained in the vendor message */
+    ac_server_info_t servers[MAX_AC_SERVERS]; /* Array of AC server information */
+    uint8_t num_servers;                      /* Number of currently stored server addresses */
+    uint16_t vnd_tid;                         /* TID contained in the vendor message */
 } store = {
-    .server_addr = ESP_BLE_MESH_ADDR_UNASSIGNED,
+    .num_servers = 0,
     .vnd_tid = 0,
 };
 
@@ -141,8 +151,18 @@ static void set_msg_common(esp_ble_mesh_client_common_param_t *common,
 #endif
 }
 
+/* Helper function to find server index by address */
+static int _find_server_index(uint16_t addr) {
+    for (uint8_t i = 0; i < store.num_servers; i++) {
+        if (store.servers[i].addr == addr) {
+            return i;
+        }
+    }
+    return -1; // Not found
+}
+
 /* 处理状态消息 */
-static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t len)
+static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t len, uint16_t src_addr)
 {
     if (data == NULL || len < 1) {
         return;
@@ -150,6 +170,16 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
 
     uint8_t type = 0;
     uint8_t value = data[0];
+
+    // Mark server as online and reset timeout count upon receiving any status message
+    int server_idx = _find_server_index(src_addr);
+    if (server_idx != -1) {
+        if (!store.servers[server_idx].is_online) {
+            ESP_LOGI(TAG, "Server 0x%04x is back online.", src_addr);
+        }
+        store.servers[server_idx].is_online = true;
+        store.servers[server_idx].consecutive_timeouts = 0;
+    }
 
     switch (opcode) {
         case AC_OP_POWER_STATUS:
@@ -188,7 +218,8 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                     param->model_operation.opcode, param->model_operation.ctx->addr);
             handle_status_message(param->model_operation.opcode, 
                                   param->model_operation.msg, 
-                                  param->model_operation.length);
+                                  param->model_operation.length,
+                                  param->model_operation.ctx->addr); // Pass src_addr
             break;
         case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
             if (param->model_send_comp.err_code) {
@@ -204,11 +235,30 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                      param->client_recv_publish_msg.opcode, param->client_recv_publish_msg.ctx->addr);
             handle_status_message(param->client_recv_publish_msg.opcode,
                                   param->client_recv_publish_msg.msg,
-                                  param->client_recv_publish_msg.length);
+                                  param->client_recv_publish_msg.length,
+                                  param->client_recv_publish_msg.ctx->addr); // Pass src_addr
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
             ESP_LOGW(TAG, "客户端消息超时，操作码 0x%06" PRIx32 ", 目标节点 0x%04x", 
                      param->client_send_timeout.opcode, param->client_send_timeout.ctx->addr);
+            
+            int timed_out_server_idx = _find_server_index(param->client_send_timeout.ctx->addr);
+            if (timed_out_server_idx != -1) {
+                store.servers[timed_out_server_idx].consecutive_timeouts++;
+                ESP_LOGI(TAG, "Server 0x%04x timeout count: %u", 
+                         store.servers[timed_out_server_idx].addr, 
+                         store.servers[timed_out_server_idx].consecutive_timeouts);
+                if (store.servers[timed_out_server_idx].consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+                    if (store.servers[timed_out_server_idx].is_online) {
+                         ESP_LOGW(TAG, "Server 0x%04x is now OFFLINE (timeouts: %u).", 
+                                 store.servers[timed_out_server_idx].addr,
+                                 store.servers[timed_out_server_idx].consecutive_timeouts);
+                        store.servers[timed_out_server_idx].is_online = false;
+                        // Optionally, you might want to reset consecutive_timeouts here or keep it
+                        // to indicate it went offline due to N timeouts. For now, let's keep it.
+                    }
+                }
+            }
             break;
         default:
             break;
@@ -231,7 +281,7 @@ esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state)
     ctx.send_ttl = common.ctx.send_ttl;
 
     err = esp_ble_mesh_client_model_send_msg(ac_client.model, &ctx, common.opcode,
-                                           1, (uint8_t *)&msg, common.msg_timeout, false, 
+                                           1, (uint8_t *)&msg, common.msg_timeout, true, 
                                            MSG_ROLE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send power set message");
@@ -457,6 +507,15 @@ void ac_ble_mesh_restore_info(void)
     esp_err_t err = ESP_OK;
     bool exist = false;
 
+    // Initialize server_addrs to unassigned before restoring
+    for (int i = 0; i < MAX_AC_SERVERS; i++) {
+        // store.server_addrs[i] = ESP_BLE_MESH_ADDR_UNASSIGNED; // Old way
+        store.servers[i].addr = ESP_BLE_MESH_ADDR_UNASSIGNED;
+        store.servers[i].is_online = false; // Default to offline until proven otherwise
+        store.servers[i].consecutive_timeouts = 0;
+    }
+    store.num_servers = 0;
+
     err = ble_mesh_nvs_restore(NVS_HANDLE, NVS_KEY, &store, sizeof(store), &exist);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to restore NVS info (err %d)", err);
@@ -464,22 +523,90 @@ void ac_ble_mesh_restore_info(void)
     }
 
     if (exist) {
-        ESP_LOGI(TAG, "Restored NVS: server_addr 0x%04x, vnd_tid 0x%04x", store.server_addr, store.vnd_tid);
+        ESP_LOGI(TAG, "Restored NVS: num_servers %u, vnd_tid 0x%04x", store.num_servers, store.vnd_tid);
+        for (uint8_t i = 0; i < store.num_servers; i++) {
+            ESP_LOGI(TAG, "  Server[%u] addr 0x%04x, online: %s, timeouts: %u", 
+                     i, store.servers[i].addr, 
+                     store.servers[i].is_online ? "yes" : "no", 
+                     store.servers[i].consecutive_timeouts);
+        }
     } else {
         ESP_LOGI(TAG, "NVS info not found or empty.");
     }
 }
 
-uint16_t ac_get_server_addr(void)
+// uint16_t ac_get_server_addr(void)
+// {
+//     if (store.num_servers > 0) {
+//         // Return the first server as a default, if online, otherwise try to find an online one
+//         if (store.servers[0].is_online) {
+//             return store.servers[0].addr;
+//         }
+//         for (uint8_t i = 0; i < store.num_servers; i++) {
+//             if (store.servers[i].is_online) {
+//                 return store.servers[i].addr;
+//             }
+//         }
+//         // If all are offline, return the first one's address anyway or unassigned
+//         return store.servers[0].addr; 
+//     }
+//     return ESP_BLE_MESH_ADDR_UNASSIGNED;
+// }
+
+void ac_add_server_addr(uint16_t addr)
 {
-    return store.server_addr;
+    if (addr == ESP_BLE_MESH_ADDR_UNASSIGNED) {
+        ESP_LOGW(TAG, "Cannot add unassigned address to server list.");
+        return;
+    }
+
+    // Check if server already exists
+    for (uint8_t i = 0; i < store.num_servers; i++) {
+        if (store.servers[i].addr == addr) {
+            ESP_LOGI(TAG, "Server address 0x%04x already in list. Resetting state.", addr);
+            // If it exists, reset its state as it's being (re-)provisioned or re-added
+            store.servers[i].is_online = true;
+            store.servers[i].consecutive_timeouts = 0;
+            return; 
+        }
+    }
+
+    // Add new server if there is space
+    if (store.num_servers < MAX_AC_SERVERS) {
+        store.servers[store.num_servers].addr = addr;
+        store.servers[store.num_servers].is_online = true; // Assume online when first added/provisioned
+        store.servers[store.num_servers].consecutive_timeouts = 0;
+        store.num_servers++;
+        ESP_LOGI(TAG, "Added new server 0x%04x. Total servers: %u", addr, store.num_servers);
+        // Optionally, immediately save to NVS if desired, though _prov_complete also calls store_info
+        ac_ble_mesh_store_info();
+    } else {
+        ESP_LOGW(TAG, "Server list full. Cannot add new server 0x%04x.", addr);
+    }
 }
 
-void ac_set_server_addr(uint16_t addr)
+uint8_t ac_get_num_servers(void)
 {
-    store.server_addr = addr;
-    // Optionally, immediately save to NVS if desired
-    // ac_ble_mesh_store_info(); 
+    return store.num_servers;
+}
+
+uint16_t ac_get_server_addr_by_index(uint8_t index)
+{
+    if (index < store.num_servers) {
+        return store.servers[index].addr;
+    }
+    ESP_LOGW(TAG, "Index %u out of bounds for server list (num_servers: %u).", index, store.num_servers);
+    return ESP_BLE_MESH_ADDR_UNASSIGNED;
+}
+
+bool ac_is_server_online(uint16_t server_addr)
+{
+    int server_idx = _find_server_index(server_addr);
+    if (server_idx != -1) {
+        return store.servers[server_idx].is_online;
+    }
+    ESP_LOGW(TAG, "Server 0x%04x not found in managed list for online check.", server_addr);
+    return false; // Server not found, so not online in our list
 }
 
 // Moved BLE helper functions from main.c (internal implementations)
@@ -512,7 +639,7 @@ static esp_err_t _prov_complete(uint16_t node_index, const esp_ble_mesh_octet16_
         node_index, primary_addr, element_num, net_idx);
     ESP_LOG_BUFFER_HEX("Device UUID", uuid, ESP_BLE_MESH_OCTET16_LEN);
 
-    ac_set_server_addr(primary_addr); // Use the helper
+    ac_add_server_addr(primary_addr); // Use the helper
     ac_ble_mesh_store_info();      // Use the helper
 
     sprintf(name, "%s%02u", "NODE-", node_index);

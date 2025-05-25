@@ -38,7 +38,7 @@ esp_err_t ac_client_init(void);
 /**
  * @brief Send power control message to server
  * 
- * @param server_addr Server address
+ * @param server_addr Target server unicast address
  * @param power_state 0: OFF, 1: ON
  * @return ESP_OK on success
  */
@@ -104,28 +104,53 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed);
 esp_err_t ac_client_get_fan_speed(uint16_t server_addr);
 
 /**
- * @brief Stores relevant BLE mesh information to NVS.
+ * @brief Stores relevant BLE mesh information (including server list) to NVS.
  */
 void ac_ble_mesh_store_info(void);
 
 /**
- * @brief Restores relevant BLE mesh information from NVS.
+ * @brief Restores relevant BLE mesh information (including server list) from NVS.
  */
 void ac_ble_mesh_restore_info(void);
 
 /**
- * @brief Gets the currently stored server address.
+ * @brief Gets the unicast address of the first/default managed server.
+ * @note For controlling specific multiple servers, use ac_get_server_addr_by_index() and iterate.
  *
- * @return uint16_t Server unicast address or ESP_BLE_MESH_ADDR_UNASSIGNED.
+ * @return uint16_t Server unicast address or ESP_BLE_MESH_ADDR_UNASSIGNED if no servers are managed.
  */
-uint16_t ac_get_server_addr(void);
+// uint16_t ac_get_server_addr(void);
 
 /**
- * @brief Sets the server address.
+ * @brief Adds a new AC server's unicast address to the list of managed devices if not already present and space is available.
+ *        Typically called after a new device is provisioned.
  *
- * @param addr Server unicast address.
+ * @param addr Server unicast address to add.
  */
-void ac_set_server_addr(uint16_t addr);
+void ac_add_server_addr(uint16_t addr);
+
+/**
+ * @brief Gets the number of currently managed AC servers.
+ *
+ * @return uint8_t Number of servers.
+ */
+uint8_t ac_get_num_servers(void);
+
+/**
+ * @brief Gets the unicast address of a managed AC server by its index in the list.
+ *
+ * @param index The index of the server in the list (0 to ac_get_num_servers() - 1).
+ * @return uint16_t Server unicast address or ESP_BLE_MESH_ADDR_UNASSIGNED if index is out of bounds.
+ */
+uint16_t ac_get_server_addr_by_index(uint8_t index);
+
+/**
+ * @brief Checks if a specific AC server is currently considered online.
+ *
+ * @param server_addr The unicast address of the server to check.
+ * @return true if the server is considered online, false otherwise (including if server not found).
+ */
+bool ac_is_server_online(uint16_t server_addr);
 
 #ifdef __cplusplus
 }
