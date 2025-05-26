@@ -524,11 +524,13 @@ void ac_ble_mesh_restore_info(void)
 
     if (exist) {
         ESP_LOGI(TAG, "Restored NVS: num_servers %u, vnd_tid 0x%04x", store.num_servers, store.vnd_tid);
+        // 重启后强制所有服务器状态为离线，只有收到消息后才标记为在线
         for (uint8_t i = 0; i < store.num_servers; i++) {
-            ESP_LOGI(TAG, "  Server[%u] addr 0x%04x, online: %s, timeouts: %u", 
-                     i, store.servers[i].addr, 
-                     store.servers[i].is_online ? "yes" : "no", 
-                     store.servers[i].consecutive_timeouts);
+            // 强制设置为离线状态，重置超时计数器
+            store.servers[i].is_online = false;
+            store.servers[i].consecutive_timeouts = 0;
+            ESP_LOGI(TAG, "  Server[%u] addr 0x%04x, set to offline after restart", 
+                     i, store.servers[i].addr);
         }
     } else {
         ESP_LOGI(TAG, "NVS info not found or empty.");

@@ -55,7 +55,7 @@ esp_ble_mesh_model_op_t ac_server_op[] = {
     /* Fan speed operations */
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_FAN_SPEED, 1),   /* Payload: 1 byte for fan speed */
     ESP_BLE_MESH_MODEL_OP(AC_OP_GET_FAN_SPEED, 0),   /* No payload */
-    
+
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -207,4 +207,26 @@ esp_err_t ac_server_set_all(uint8_t power, uint8_t temperature, uint8_t mode, ui
     ESP_LOGI(TAG, "空调所有参数设置完成");
     
     return ESP_OK;
+}
+
+/* Getter function implementations */
+
+uint8_t ac_server_get_current_power(void)
+{
+    return ac_state.power;
+}
+
+uint8_t ac_server_get_current_temperature(void)
+{
+    return ac_state.temperature;
+}
+
+uint8_t ac_server_get_current_mode(void)
+{
+    return ac_state.mode;
+}
+
+uint8_t ac_server_get_current_fan_speed(void)
+{
+    return ac_state.fan_speed;
 }

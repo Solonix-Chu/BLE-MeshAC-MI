@@ -159,28 +159,118 @@ static void example_ble_mesh_config_server_cb(esp_ble_mesh_cfg_server_cb_event_t
 static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
                                              esp_ble_mesh_model_cb_param_t *param)
 {
+    esp_err_t err = ESP_OK;
+    uint8_t status_payload = 0;
+    uint32_t status_opcode = 0;
+
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        if (param->model_operation.opcode == AC_OP_SET_POWER) {
-            uint16_t tid = *(uint16_t *)param->model_operation.msg;
-            ESP_LOGI(TAG, "Recv 0x%06" PRIx32 ", tid 0x%04x", param->model_operation.opcode, tid);
-            // TODO: 处理接收到的控制命令
-            esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
-                    param->model_operation.ctx, AC_OP_POWER_STATUS,
-                    sizeof(tid), (uint8_t *)&tid);
-            if (err) {
-                ESP_LOGE(TAG, "Failed to send message 0x%06x", AC_OP_POWER_STATUS);
+        ESP_LOGI(TAG, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d",
+                 param->model_operation.opcode, param->model_operation.ctx->addr,
+                 param->model_operation.ctx->recv_dst, param->model_operation.length);
+
+        uint8_t value_received = 0; // Initialize to a default value
+
+        switch (param->model_operation.opcode) {
+            case AC_OP_SET_POWER:
+                if (param->model_operation.length == 1) {
+                    value_received = param->model_operation.msg[0];
+                    ESP_LOGI(TAG, "AC_OP_SET_POWER: value %d", value_received);
+                    err = ac_server_set_power(value_received);
+                    status_payload = ac_server_get_current_power();
+                    status_opcode = AC_OP_POWER_STATUS;
+                } else {
+                    ESP_LOGE(TAG, "AC_OP_SET_POWER: Invalid message length %d, expected 1", param->model_operation.length);
+                    err = ESP_ERR_INVALID_ARG; // Indicate an error
+                }
+                break;
+            case AC_OP_GET_POWER:
+                ESP_LOGI(TAG, "AC_OP_GET_POWER");
+                status_payload = ac_server_get_current_power();
+                status_opcode = AC_OP_POWER_STATUS;
+                break;
+            case AC_OP_SET_TEMPERATURE:
+                if (param->model_operation.length == 1) {
+                    value_received = param->model_operation.msg[0];
+                    ESP_LOGI(TAG, "AC_OP_SET_TEMPERATURE: value %d", value_received);
+                    err = ac_server_set_temperature(value_received);
+                    status_payload = ac_server_get_current_temperature();
+                    status_opcode = AC_OP_TEMPERATURE_STATUS;
+                } else {
+                    ESP_LOGE(TAG, "AC_OP_SET_TEMPERATURE: Invalid message length %d, expected 1", param->model_operation.length);
+                    err = ESP_ERR_INVALID_ARG;
+                }
+                break;
+            case AC_OP_GET_TEMPERATURE:
+                ESP_LOGI(TAG, "AC_OP_GET_TEMPERATURE");
+                status_payload = ac_server_get_current_temperature();
+                status_opcode = AC_OP_TEMPERATURE_STATUS;
+                break;
+            case AC_OP_SET_MODE:
+                if (param->model_operation.length == 1) {
+                    value_received = param->model_operation.msg[0];
+                    ESP_LOGI(TAG, "AC_OP_SET_MODE: value %d", value_received);
+                    err = ac_server_set_mode(value_received);
+                    status_payload = ac_server_get_current_mode();
+                    status_opcode = AC_OP_MODE_STATUS;
+                } else {
+                    ESP_LOGE(TAG, "AC_OP_SET_MODE: Invalid message length %d, expected 1", param->model_operation.length);
+                    err = ESP_ERR_INVALID_ARG;
+                }
+                break;
+            case AC_OP_GET_MODE:
+                ESP_LOGI(TAG, "AC_OP_GET_MODE");
+                status_payload = ac_server_get_current_mode();
+                status_opcode = AC_OP_MODE_STATUS;
+                break;
+            case AC_OP_SET_FAN_SPEED:
+                if (param->model_operation.length == 1) {
+                    value_received = param->model_operation.msg[0];
+                    ESP_LOGI(TAG, "AC_OP_SET_FAN_SPEED: value %d", value_received);
+                    err = ac_server_set_fan_speed(value_received);
+                    status_payload = ac_server_get_current_fan_speed();
+                    status_opcode = AC_OP_FAN_SPEED_STATUS;
+                } else {
+                    ESP_LOGE(TAG, "AC_OP_SET_FAN_SPEED: Invalid message length %d, expected 1", param->model_operation.length);
+                    err = ESP_ERR_INVALID_ARG;
+                }
+                break;
+            case AC_OP_GET_FAN_SPEED:
+                ESP_LOGI(TAG, "AC_OP_GET_FAN_SPEED");
+                status_payload = ac_server_get_current_fan_speed();
+                status_opcode = AC_OP_FAN_SPEED_STATUS;
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown opcode 0x%06" PRIx32, param->model_operation.opcode);
+                break;
+        }
+
+        if (err == ESP_OK && status_opcode != 0) {
+            ESP_LOGI(TAG, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x", status_opcode, status_payload);
+            esp_err_t send_err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
+                                                                    param->model_operation.ctx,
+                                                                    status_opcode,
+                                                                    sizeof(status_payload),
+                                                                    &status_payload);
+            if (send_err) {
+                ESP_LOGE(TAG, "Failed to send status message 0x%06" PRIx32 " (err %d)", status_opcode, send_err);
             }
+        } else if (err != ESP_OK && status_opcode != 0) { // Modified condition: if err but status_opcode was set (i.e. it was a SET op that failed length check)
+             ESP_LOGE(TAG, "Error processing SET operation or invalid length (err %d for opcode 0x%06" PRIx32 "), not sending status.", err, param->model_operation.opcode);
+        } else if (err != ESP_OK && status_opcode == 0) { // If err from a SET op inside ac_server_set_... and not length error
+            ESP_LOGE(TAG, "Error processing SET operation (err %d from ac_server_set_xxx), not sending status for opcode 0x%06" PRIx32 ".", err, param->model_operation.opcode);
         }
         break;
     case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
         if (param->model_send_comp.err_code) {
-            ESP_LOGE(TAG, "Failed to send message 0x%06" PRIx32, param->model_send_comp.opcode);
-            break;
+            ESP_LOGE(TAG, "Failed to send message 0x%06" PRIx32 " (err_code %d)", 
+                     param->model_send_comp.opcode, param->model_send_comp.err_code);
+        } else {
+            ESP_LOGI(TAG, "Successfully sent message 0x%06" PRIx32, param->model_send_comp.opcode);
         }
-        ESP_LOGI(TAG, "Send 0x%06" PRIx32, param->model_send_comp.opcode);
         break;
     default:
+        ESP_LOGW(TAG, "Unhandled model event: %d", event);
         break;
     }
 }

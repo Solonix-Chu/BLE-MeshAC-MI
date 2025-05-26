@@ -116,6 +116,20 @@ typedef void (*ac_status_callback_t)(uint8_t value);
  */
 esp_err_t ac_server_set_all(uint8_t power, uint8_t temperature, uint8_t mode, uint8_t fan_speed);
 
+/* Getter functions for current AC state */
+
+/** @brief Get current power state. */
+uint8_t ac_server_get_current_power(void);
+
+/** @brief Get current temperature setting. */
+uint8_t ac_server_get_current_temperature(void);
+
+/** @brief Get current AC mode. */
+uint8_t ac_server_get_current_mode(void);
+
+/** @brief Get current fan speed. */
+uint8_t ac_server_get_current_fan_speed(void);
+
 #ifdef __cplusplus
 }
 #endif
