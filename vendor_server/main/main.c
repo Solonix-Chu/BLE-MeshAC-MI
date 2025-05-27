@@ -70,7 +70,7 @@ static esp_ble_mesh_model_t root_models[] = {
 
 extern esp_ble_mesh_model_op_t ac_server_op[];
 
-static esp_ble_mesh_model_t vnd_models[] = {
+esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, ESP_BLE_MESH_VND_MODEL_ID_SERVER,
     ac_server_op, NULL, NULL),
 };
@@ -94,6 +94,9 @@ static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32
     ESP_LOGI(TAG, "net_idx 0x%03x, addr 0x%04x", net_idx, addr);
     ESP_LOGI(TAG, "flags 0x%02x, iv_index 0x%08" PRIx32, flags, iv_index);
     board_led_operation(LED_G, LED_OFF);
+    
+    /* 配网完成，等待应用密钥绑定完成后再启动心跳包机制 */
+    ESP_LOGI(TAG, "Provisioning completed, waiting for app key binding before starting heartbeat");
 }
 
 static void example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
@@ -149,6 +152,21 @@ static void example_ble_mesh_config_server_cb(esp_ble_mesh_cfg_server_cb_event_t
                 param->value.state_change.mod_app_bind.app_idx,
                 param->value.state_change.mod_app_bind.company_id,
                 param->value.state_change.mod_app_bind.model_id);
+            
+            /* 应用密钥绑定完成后启动心跳包机制 */
+            if (param->value.state_change.mod_app_bind.company_id == MY_COMPANY_ID &&
+                param->value.state_change.mod_app_bind.model_id == MY_MODEL_ID_AC_SERVER) {
+                ESP_LOGI(TAG, "AC Server model app key bound, starting heartbeat mechanism");
+                
+                /* 假设客户端地址为0x0001，实际应用中需要动态获取 */
+                uint16_t client_addr = 0x0001;
+                esp_err_t err = ac_server_start_heartbeat(client_addr);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to start heartbeat mechanism (err %d)", err);
+                } else {
+                    ESP_LOGI(TAG, "Heartbeat mechanism started for client 0x%04x", client_addr);
+                }
+            }
             break;
         default:
             break;
@@ -162,14 +180,13 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
     esp_err_t err = ESP_OK;
     uint8_t status_payload = 0;
     uint32_t status_opcode = 0;
+    uint8_t value_received = 0; // 移动变量声明到函数开始处
 
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
         ESP_LOGI(TAG, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d",
                  param->model_operation.opcode, param->model_operation.ctx->addr,
                  param->model_operation.ctx->recv_dst, param->model_operation.length);
-
-        uint8_t value_received = 0; // Initialize to a default value
 
         switch (param->model_operation.opcode) {
             case AC_OP_SET_POWER:
@@ -240,6 +257,12 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                 status_payload = ac_server_get_current_fan_speed();
                 status_opcode = AC_OP_FAN_SPEED_STATUS;
                 break;
+            case AC_OP_HEARTBEAT_ACK:
+                ESP_LOGI(TAG, "AC_OP_HEARTBEAT_ACK received");
+                ac_server_handle_heartbeat_ack();
+                /* 心跳包ACK不需要回复状态消息 */
+                status_opcode = 0;
+                break;
             default:
                 ESP_LOGW(TAG, "Unknown opcode 0x%06" PRIx32, param->model_operation.opcode);
                 break;
@@ -267,6 +290,18 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                      param->model_send_comp.opcode, param->model_send_comp.err_code);
         } else {
             ESP_LOGI(TAG, "Successfully sent message 0x%06" PRIx32, param->model_send_comp.opcode);
+        }
+        break;
+    case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
+        ESP_LOGW(TAG, "Client model send timeout for opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x",
+                 param->client_send_timeout.opcode,
+                 param->client_send_timeout.ctx->addr,
+                 param->client_send_timeout.ctx->recv_dst);
+        
+        /* 检查是否是心跳包超时 */
+        if (param->client_send_timeout.opcode == AC_OP_HEARTBEAT) {
+            ESP_LOGW(TAG, "Heartbeat timeout detected");
+            ac_server_handle_heartbeat_timeout();
         }
         break;
     default:

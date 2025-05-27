@@ -130,6 +130,38 @@ uint8_t ac_server_get_current_mode(void);
 /** @brief Get current fan speed. */
 uint8_t ac_server_get_current_fan_speed(void);
 
+/**
+ * @brief Initialize heartbeat mechanism after provisioning
+ * 
+ * @param client_addr Client unicast address to send heartbeat to
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_start_heartbeat(uint16_t client_addr);
+
+/**
+ * @brief Stop heartbeat mechanism
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_stop_heartbeat(void);
+
+/**
+ * @brief Send heartbeat packet to client
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_send_heartbeat(void);
+
+/**
+ * @brief Handle heartbeat timeout and reconnection logic
+ */
+void ac_server_handle_heartbeat_timeout(void);
+
+/**
+ * @brief Handle received heartbeat ACK from client
+ */
+void ac_server_handle_heartbeat_ack(void);
+
 #ifdef __cplusplus
 }
 #endif

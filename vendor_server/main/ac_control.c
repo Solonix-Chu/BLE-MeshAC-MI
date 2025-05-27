@@ -12,8 +12,28 @@
 #include <inttypes.h>
 
 #include "mesh_common.h"
+#include "esp_timer.h"
 
 #define TAG "AC_SERVER"
+
+/* 心跳包配置 */
+#define HEARTBEAT_INTERVAL_MS    2000   /* 2秒发送一次心跳包 */
+#define MAX_HEARTBEAT_TIMEOUTS   3      /* 最大超时次数 */
+
+/* 心跳包状态管理 */
+static struct {
+    uint16_t client_addr;               /* 客户端地址 */
+    esp_timer_handle_t timer_handle;    /* 定时器句柄 */
+    uint8_t timeout_count;              /* 超时计数 */
+    bool is_connected;                  /* 连接状态 */
+    bool heartbeat_enabled;             /* 心跳包是否启用 */
+} heartbeat_state = {
+    .client_addr = 0,
+    .timer_handle = NULL,
+    .timeout_count = 0,
+    .is_connected = false,
+    .heartbeat_enabled = false
+};
 
 /* 当前空调状态 */
 static struct {
@@ -56,16 +76,20 @@ esp_ble_mesh_model_op_t ac_server_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_FAN_SPEED, 1),   /* Payload: 1 byte for fan speed */
     ESP_BLE_MESH_MODEL_OP(AC_OP_GET_FAN_SPEED, 0),   /* No payload */
 
+    /* Heartbeat operations */
+    ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),   /* No payload for heartbeat ACK */
+
     ESP_BLE_MESH_MODEL_OP_END,
 };
+
+/* 外部模型引用 */
+extern esp_ble_mesh_model_t vnd_models[];
 
 /**
  * @brief 初始化空调控制接口
  */
 esp_err_t ac_server_init(void)
 {
-    esp_err_t err;
-    
     ESP_LOGI(TAG, "空调控制初始化成功");
     return ESP_OK;
 }
@@ -229,4 +253,142 @@ uint8_t ac_server_get_current_mode(void)
 uint8_t ac_server_get_current_fan_speed(void)
 {
     return ac_state.fan_speed;
+}
+
+/* 心跳包定时器回调函数 */
+static void heartbeat_timer_callback(void* arg)
+{
+    if (heartbeat_state.heartbeat_enabled && heartbeat_state.is_connected) {
+        esp_err_t err = ac_server_send_heartbeat();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send heartbeat packet (err %d)", err);
+        }
+    }
+}
+
+/**
+ * @brief 启动心跳包机制
+ */
+esp_err_t ac_server_start_heartbeat(uint16_t client_addr)
+{
+    esp_err_t err;
+    
+    if (heartbeat_state.timer_handle != NULL) {
+        ESP_LOGW(TAG, "Heartbeat timer already exists, stopping first");
+        ac_server_stop_heartbeat();
+    }
+    
+    heartbeat_state.client_addr = client_addr;
+    heartbeat_state.timeout_count = 0;
+    heartbeat_state.is_connected = true;
+    heartbeat_state.heartbeat_enabled = true;
+    
+    /* 创建定时器 */
+    const esp_timer_create_args_t timer_args = {
+        .callback = &heartbeat_timer_callback,
+        .arg = NULL,
+        .name = "heartbeat_timer"
+    };
+    
+    err = esp_timer_create(&timer_args, &heartbeat_state.timer_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create heartbeat timer (err %d)", err);
+        return err;
+    }
+    
+    /* 启动定时器 */
+    err = esp_timer_start_periodic(heartbeat_state.timer_handle, HEARTBEAT_INTERVAL_MS * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start heartbeat timer (err %d)", err);
+        esp_timer_delete(heartbeat_state.timer_handle);
+        heartbeat_state.timer_handle = NULL;
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Heartbeat started for client 0x%04x", client_addr);
+    return ESP_OK;
+}
+
+/**
+ * @brief 停止心跳包机制
+ */
+esp_err_t ac_server_stop_heartbeat(void)
+{
+    if (heartbeat_state.timer_handle != NULL) {
+        esp_timer_stop(heartbeat_state.timer_handle);
+        esp_timer_delete(heartbeat_state.timer_handle);
+        heartbeat_state.timer_handle = NULL;
+    }
+    
+    heartbeat_state.heartbeat_enabled = false;
+    heartbeat_state.is_connected = false;
+    heartbeat_state.timeout_count = 0;
+    
+    ESP_LOGI(TAG, "Heartbeat stopped");
+    return ESP_OK;
+}
+
+/**
+ * @brief 发送心跳包
+ */
+esp_err_t ac_server_send_heartbeat(void)
+{
+    if (!heartbeat_state.heartbeat_enabled || heartbeat_state.client_addr == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    esp_ble_mesh_msg_ctx_t ctx = {0};
+    ctx.net_idx = 0;  /* 使用主网络密钥 */
+    ctx.app_idx = 0;  /* 使用主应用密钥 */
+    ctx.addr = heartbeat_state.client_addr;
+    ctx.send_ttl = 7;
+    
+    /* 发送心跳包，使用正确的模型指针 */
+    esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0], &ctx, AC_OP_HEARTBEAT, 0, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send heartbeat to 0x%04x (err %d)", heartbeat_state.client_addr, err);
+        return err;
+    }
+    
+    ESP_LOGD(TAG, "Heartbeat sent to client 0x%04x", heartbeat_state.client_addr);
+    return ESP_OK;
+}
+
+/**
+ * @brief 处理心跳包超时
+ */
+void ac_server_handle_heartbeat_timeout(void)
+{
+    heartbeat_state.timeout_count++;
+    ESP_LOGW(TAG, "Heartbeat timeout #%d for client 0x%04x", 
+             heartbeat_state.timeout_count, heartbeat_state.client_addr);
+    
+    if (heartbeat_state.timeout_count >= MAX_HEARTBEAT_TIMEOUTS) {
+        ESP_LOGE(TAG, "Client 0x%04x disconnected after %d timeouts, entering re-provisioning mode", 
+                 heartbeat_state.client_addr, MAX_HEARTBEAT_TIMEOUTS);
+        
+        /* 停止心跳包 */
+        ac_server_stop_heartbeat();
+        
+        /* 进入重新配网状态 */
+        esp_err_t err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to re-enable provisioning (err %d)", err);
+        } else {
+            ESP_LOGI(TAG, "Re-provisioning mode enabled");
+            /* 可以在这里添加LED指示或其他状态指示 */
+            board_led_operation(LED_G, LED_ON);  /* 绿灯常亮表示等待配网 */
+        }
+    }
+}
+
+/**
+ * @brief 处理收到的心跳包ACK
+ */
+void ac_server_handle_heartbeat_ack(void)
+{
+    if (heartbeat_state.heartbeat_enabled) {
+        heartbeat_state.timeout_count = 0;  /* 重置超时计数 */
+        ESP_LOGD(TAG, "Heartbeat ACK received from client 0x%04x", heartbeat_state.client_addr);
+    }
 }

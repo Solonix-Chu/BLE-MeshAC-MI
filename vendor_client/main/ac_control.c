@@ -72,6 +72,9 @@ static esp_ble_mesh_model_op_t ac_client_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_TEMPERATURE_STATUS, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_MODE_STATUS, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_FAN_SPEED_STATUS, 1),
+    /* 心跳包处理器 */
+    ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -85,6 +88,8 @@ static esp_ble_mesh_client_op_pair_t ac_client_op_pair[] = {
     {AC_OP_GET_MODE, AC_OP_MODE_STATUS},
     {AC_OP_SET_FAN_SPEED, AC_OP_FAN_SPEED_STATUS},
     {AC_OP_GET_FAN_SPEED, AC_OP_FAN_SPEED_STATUS},
+    /* 心跳包操作对 - 心跳包不需要状态响应，所以使用相同的操作码 */
+    {AC_OP_HEARTBEAT_ACK, AC_OP_HEARTBEAT_ACK},
 };
 
 static esp_ble_mesh_client_t ac_client = {
@@ -164,12 +169,8 @@ static int _find_server_index(uint16_t addr) {
 /* 处理状态消息 */
 static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t len, uint16_t src_addr)
 {
-    if (data == NULL || len < 1) {
-        return;
-    }
-
     uint8_t type = 0;
-    uint8_t value = data[0];
+    uint8_t value = 0;
 
     // Mark server as online and reset timeout count upon receiving any status message
     int server_idx = _find_server_index(src_addr);
@@ -182,21 +183,51 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
     }
 
     switch (opcode) {
+        case AC_OP_HEARTBEAT:
+            ESP_LOGD(TAG, "Received heartbeat from server 0x%04x", src_addr);
+            /* 发送心跳包ACK响应 */
+            esp_ble_mesh_msg_ctx_t ctx = {0};
+            ctx.net_idx = prov_key.net_idx;
+            ctx.app_idx = prov_key.app_idx;
+            ctx.addr = src_addr;
+            ctx.send_ttl = MSG_SEND_TTL;
+            
+            /* 使用服务器模型发送ACK响应 */
+            esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0], &ctx, AC_OP_HEARTBEAT_ACK,
+                                                             0, NULL);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to send heartbeat ACK to 0x%04x (err %d)", src_addr, err);
+            } else {
+                ESP_LOGD(TAG, "Heartbeat ACK sent to server 0x%04x", src_addr);
+            }
+            return; /* 心跳包不需要进一步处理 */
         case AC_OP_POWER_STATUS:
-            type = AC_STATUS_POWER;
-            ESP_LOGI(TAG, "Received power status: %d", value);
+            if (data != NULL && len >= 1) {
+                value = data[0];
+                type = AC_STATUS_POWER;
+                ESP_LOGI(TAG, "Received power status: %d", value);
+            }
             break;
         case AC_OP_TEMPERATURE_STATUS:
-            type = AC_STATUS_TEMPERATURE;
-            ESP_LOGI(TAG, "Received temperature status: %d", value);
+            if (data != NULL && len >= 1) {
+                value = data[0];
+                type = AC_STATUS_TEMPERATURE;
+                ESP_LOGI(TAG, "Received temperature status: %d", value);
+            }
             break;
         case AC_OP_MODE_STATUS:
-            type = AC_STATUS_MODE;
-            ESP_LOGI(TAG, "Received mode status: %d", value);
+            if (data != NULL && len >= 1) {
+                value = data[0];
+                type = AC_STATUS_MODE;
+                ESP_LOGI(TAG, "Received mode status: %d", value);
+            }
             break;
         case AC_OP_FAN_SPEED_STATUS:
-            type = AC_STATUS_FAN_SPEED;
-            ESP_LOGI(TAG, "Received fan speed status: %d", value);
+            if (data != NULL && len >= 1) {
+                value = data[0];
+                type = AC_STATUS_FAN_SPEED;
+                ESP_LOGI(TAG, "Received fan speed status: %d", value);
+            }
             break;
         default:
             return;

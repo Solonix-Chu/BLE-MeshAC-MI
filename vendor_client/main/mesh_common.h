@@ -36,6 +36,10 @@ extern "C" {
 #define AC_OP_GET_FAN_SPEED     ESP_BLE_MESH_MODEL_OP_3(0x0A, MY_COMPANY_ID)
 #define AC_OP_FAN_SPEED_STATUS  ESP_BLE_MESH_MODEL_OP_3(0x0B, MY_COMPANY_ID)
 
+/* AC Operation Codes - Heartbeat */
+#define AC_OP_HEARTBEAT         ESP_BLE_MESH_MODEL_OP_3(0x0C, MY_COMPANY_ID)
+#define AC_OP_HEARTBEAT_ACK     ESP_BLE_MESH_MODEL_OP_3(0x0D, MY_COMPANY_ID)
+
 /* AC Mode Definitions */
 #define AC_MODE_COOL            0x00
 #define AC_MODE_HEAT            0x01
