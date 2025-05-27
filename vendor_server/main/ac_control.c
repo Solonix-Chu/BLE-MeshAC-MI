@@ -15,6 +15,7 @@
 
 #include "mesh_common.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 
 #define TAG_AC_CTRL "AC_SERVER_CTRL"
 
@@ -46,7 +47,7 @@ static esp_ble_mesh_model_t root_models[] = {
 };
 
 /* 心跳包配置 */
-#define HEARTBEAT_INTERVAL_MS    2000   /* 2秒发送一次心跳包 */
+#define HEARTBEAT_INTERVAL_MS    5000   /* 5秒发送一次心跳包 */
 #define MAX_HEARTBEAT_TIMEOUTS   3      /* 最大超时次数 */
 
 /* 心跳包状态管理 */
@@ -116,7 +117,7 @@ static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32
 {
     ESP_LOGI(TAG_AC_CTRL, "Provisioning complete: net_idx 0x%03x, addr 0x%04x", net_idx, addr);
     ESP_LOGI(TAG_AC_CTRL, "flags 0x%02x, iv_index 0x%08" PRIx32, flags, iv_index);
-    board_led_operation(LED_G, LED_OFF);
+    board_led_operation(LED_STATE_SUCCESS);
     ESP_LOGI(TAG_AC_CTRL, "Waiting for app key binding before starting heartbeat");
 }
 
@@ -343,16 +344,18 @@ esp_err_t ac_server_init(void)
     err = esp_ble_mesh_init(&provision, &composition);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_AC_CTRL, "Failed to initialize mesh stack (err %d)", err);
+        board_led_operation(LED_STATE_ERROR);
         return err;
     }
 
     err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
     if (err != ESP_OK) {
         ESP_LOGE(TAG_AC_CTRL, "Failed to enable mesh node (err %d)", err);
+        board_led_operation(LED_STATE_ERROR);
         return err;
     }
 
-    board_led_operation(LED_G, LED_ON);
+    board_led_operation(LED_STATE_PROV);
 
     ESP_LOGI(TAG_AC_CTRL, "AC BLE Mesh Server Module initialized, node enabled for provisioning.");
 
@@ -475,10 +478,30 @@ uint8_t ac_server_get_current_fan_speed(void)
 /* 心跳包定时器回调函数 */
 static void heartbeat_timer_callback(void* arg)
 {
+    // Check if heartbeating is active and we are connected.
+    // These flags might be changed by ac_server_stop_heartbeat() if max timeouts were reached
+    // in a previous call to this callback via ac_server_handle_heartbeat_timeout().
+    if (!heartbeat_state.heartbeat_enabled || !heartbeat_state.is_connected) {
+        return;
+    }
+
+    // Process a potential timeout for the ACK of the *previous* heartbeat.
+    // ac_server_handle_heartbeat_ack() normally resets heartbeat_state.timeout_count to 0.
+    // If no ACK was received for the previous heartbeat, timeout_count will be incremented
+    // by ac_server_handle_heartbeat_timeout(), and relevant actions (like LED changes or
+    // stopping heartbeats on max retries) will be taken.
+    ac_server_handle_heartbeat_timeout();
+
+    // If still enabled and connected after timeout processing (it might have been stopped
+    // by ac_server_handle_heartbeat_timeout if max timeouts were reached)
     if (heartbeat_state.heartbeat_enabled && heartbeat_state.is_connected) {
         esp_err_t err = ac_server_send_heartbeat();
         if (err != ESP_OK) {
             ESP_LOGE(TAG_AC_CTRL, "Failed to send heartbeat packet (err %d)", err);
+            // Note: A failure to send could also be a reason to increment a timeout or error counter,
+            // but for now, we rely on the ACK timeout mechanism.
+        } else {
+            ESP_LOGD(TAG_AC_CTRL, "Heartbeat sent to client 0x%04x, awaiting ACK.", heartbeat_state.client_addr);
         }
     }
 }
@@ -568,12 +591,16 @@ void ac_server_handle_heartbeat_timeout(void)
     ESP_LOGW(TAG_AC_CTRL, "Heartbeat ACK not received from client 0x%04x, timeout #%d", 
              heartbeat_state.client_addr, heartbeat_state.timeout_count);
     
+    board_led_operation(LED_STATE_HEARTBEAT);
+
     if (heartbeat_state.timeout_count >= MAX_HEARTBEAT_TIMEOUTS) {
-        ESP_LOGE(TAG_AC_CTRL, "Client 0x%04x disconnected (failed to ACK %d heartbeats). Stopping heartbeat.", 
+        ESP_LOGE(TAG_AC_CTRL, "Client 0x%04x disconnected (failed to ACK %d heartbeats). Stopping heartbeat and RESTARTING device.", 
                  heartbeat_state.client_addr, MAX_HEARTBEAT_TIMEOUTS);
         
+        board_led_operation(LED_STATE_ERROR);
         ac_server_stop_heartbeat();
-        ESP_LOGI(TAG_AC_CTRL, "Device may need to be re-provisioned if connection lost.");
+        ESP_LOGI(TAG_AC_CTRL, "Restarting device now due to heartbeat timeout.");
+        esp_restart();
     } else {
     }
 }
@@ -586,6 +613,7 @@ void ac_server_handle_heartbeat_ack(void)
     if (heartbeat_state.heartbeat_enabled && heartbeat_state.is_connected) {
         heartbeat_state.timeout_count = 0;
         ESP_LOGI(TAG_AC_CTRL, "Heartbeat ACK received from client 0x%04x. Connection healthy.", heartbeat_state.client_addr);
+        board_led_operation(LED_STATE_SUCCESS);
     } else {
         ESP_LOGW(TAG_AC_CTRL, "Heartbeat ACK received but heartbeat not active/connected for client 0x%04x", heartbeat_state.client_addr);
     }
