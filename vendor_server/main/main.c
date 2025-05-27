@@ -15,336 +15,21 @@
 #include "nvs_flash.h"
 #include "esp_bt.h"
 
-#include "esp_ble_mesh_defs.h"
-#include "esp_ble_mesh_common_api.h"
-#include "esp_ble_mesh_networking_api.h"
-#include "esp_ble_mesh_provisioning_api.h"
-#include "esp_ble_mesh_config_model_api.h"
-#include "esp_ble_mesh_local_data_operation_api.h"
-
 #include "board.h"
-#include "ble_mesh_example_init.h"
-#include "mesh_common.h"
-#include "ac_control.h"
+#include "ble_mesh_example_init.h" // For bluetooth_init() and ble_mesh_get_dev_uuid() if still used here
+#include "mesh_common.h" // For common definitions like MY_COMPANY_ID etc.
+#include "ac_control.h"  // For ac_server_init()
 
-#define TAG "EXAMPLE"
-
-#define CID_ESP     MY_COMPANY_ID
-
-#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT    MY_MODEL_ID_AC_CLIENT
-#define ESP_BLE_MESH_VND_MODEL_ID_SERVER    MY_MODEL_ID_AC_SERVER
-//TODO：替换宏为mesh_common.h中的宏
-
-// #define ESP_BLE_MESH_VND_MODEL_OP_SEND      ESP_BLE_MESH_MODEL_OP_3(0x00, CID_ESP)
-// #define ESP_BLE_MESH_VND_MODEL_OP_STATUS    ESP_BLE_MESH_MODEL_OP_3(0x01, CID_ESP)
-
-static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN] = { 0xdd, 0xdd };
-
-static esp_ble_mesh_cfg_srv_t config_server = {
-    /* 3 transmissions with 20ms interval */
-    .net_transmit = ESP_BLE_MESH_TRANSMIT(2, 20),
-    .relay = ESP_BLE_MESH_RELAY_DISABLED,
-    .relay_retransmit = ESP_BLE_MESH_TRANSMIT(2, 20),
-    .beacon = ESP_BLE_MESH_BEACON_ENABLED,
-#if defined(CONFIG_BLE_MESH_GATT_PROXY_SERVER)
-    .gatt_proxy = ESP_BLE_MESH_GATT_PROXY_ENABLED,
-#else
-    .gatt_proxy = ESP_BLE_MESH_GATT_PROXY_NOT_SUPPORTED,
-#endif
-#if defined(CONFIG_BLE_MESH_FRIEND)
-    .friend_state = ESP_BLE_MESH_FRIEND_ENABLED,
-#else
-    .friend_state = ESP_BLE_MESH_FRIEND_NOT_SUPPORTED,
-#endif
-    .default_ttl = 7,
-};
-
-static esp_ble_mesh_model_t root_models[] = {
-    ESP_BLE_MESH_MODEL_CFG_SRV(&config_server),
-};
-
-// static esp_ble_mesh_model_op_t vnd_op[] = {
-//     ESP_BLE_MESH_MODEL_OP(ESP_BLE_MESH_VND_MODEL_OP_SEND, 2),
-//     ESP_BLE_MESH_MODEL_OP_END,
-// };
-
-extern esp_ble_mesh_model_op_t ac_server_op[];
-
-esp_ble_mesh_model_t vnd_models[] = {
-    ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, ESP_BLE_MESH_VND_MODEL_ID_SERVER,
-    ac_server_op, NULL, NULL),
-};
-
-static esp_ble_mesh_elem_t elements[] = {
-    ESP_BLE_MESH_ELEMENT(0, root_models, vnd_models),
-};
-
-static esp_ble_mesh_comp_t composition = {
-    .cid = CID_ESP,
-    .element_count = ARRAY_SIZE(elements),
-    .elements = elements,
-};
-
-static esp_ble_mesh_prov_t provision = {
-    .uuid = dev_uuid,
-};
-
-static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32_t iv_index)
-{
-    ESP_LOGI(TAG, "net_idx 0x%03x, addr 0x%04x", net_idx, addr);
-    ESP_LOGI(TAG, "flags 0x%02x, iv_index 0x%08" PRIx32, flags, iv_index);
-    board_led_operation(LED_G, LED_OFF);
-    
-    /* 配网完成，等待应用密钥绑定完成后再启动心跳包机制 */
-    ESP_LOGI(TAG, "Provisioning completed, waiting for app key binding before starting heartbeat");
-}
-
-static void example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
-                                             esp_ble_mesh_prov_cb_param_t *param)
-{
-    switch (event) {
-    case ESP_BLE_MESH_PROV_REGISTER_COMP_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_PROV_REGISTER_COMP_EVT, err_code %d", param->prov_register_comp.err_code);
-        break;
-    case ESP_BLE_MESH_NODE_PROV_ENABLE_COMP_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_PROV_ENABLE_COMP_EVT, err_code %d", param->node_prov_enable_comp.err_code);
-        break;
-    case ESP_BLE_MESH_NODE_PROV_LINK_OPEN_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_PROV_LINK_OPEN_EVT, bearer %s",
-            param->node_prov_link_open.bearer == ESP_BLE_MESH_PROV_ADV ? "PB-ADV" : "PB-GATT");
-        break;
-    case ESP_BLE_MESH_NODE_PROV_LINK_CLOSE_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_PROV_LINK_CLOSE_EVT, bearer %s",
-            param->node_prov_link_close.bearer == ESP_BLE_MESH_PROV_ADV ? "PB-ADV" : "PB-GATT");
-        break;
-    case ESP_BLE_MESH_NODE_PROV_COMPLETE_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_PROV_COMPLETE_EVT");
-        prov_complete(param->node_prov_complete.net_idx, param->node_prov_complete.addr,
-            param->node_prov_complete.flags, param->node_prov_complete.iv_index);
-        break;
-    case ESP_BLE_MESH_NODE_PROV_RESET_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_PROV_RESET_EVT");
-        break;
-    case ESP_BLE_MESH_NODE_SET_UNPROV_DEV_NAME_COMP_EVT:
-        ESP_LOGI(TAG, "ESP_BLE_MESH_NODE_SET_UNPROV_DEV_NAME_COMP_EVT, err_code %d", param->node_set_unprov_dev_name_comp.err_code);
-        break;
-    default:
-        break;
-    }
-}
-
-static void example_ble_mesh_config_server_cb(esp_ble_mesh_cfg_server_cb_event_t event,
-                                              esp_ble_mesh_cfg_server_cb_param_t *param)
-{
-    if (event == ESP_BLE_MESH_CFG_SERVER_STATE_CHANGE_EVT) {
-        switch (param->ctx.recv_op) {
-        case ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD:
-            ESP_LOGI(TAG, "ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD");
-            ESP_LOGI(TAG, "net_idx 0x%04x, app_idx 0x%04x",
-                param->value.state_change.appkey_add.net_idx,
-                param->value.state_change.appkey_add.app_idx);
-            ESP_LOG_BUFFER_HEX("AppKey", param->value.state_change.appkey_add.app_key, 16);
-            break;
-        case ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND:
-            ESP_LOGI(TAG, "ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND");
-            ESP_LOGI(TAG, "elem_addr 0x%04x, app_idx 0x%04x, cid 0x%04x, mod_id 0x%04x",
-                param->value.state_change.mod_app_bind.element_addr,
-                param->value.state_change.mod_app_bind.app_idx,
-                param->value.state_change.mod_app_bind.company_id,
-                param->value.state_change.mod_app_bind.model_id);
-            
-            /* 应用密钥绑定完成后启动心跳包机制 */
-            if (param->value.state_change.mod_app_bind.company_id == MY_COMPANY_ID &&
-                param->value.state_change.mod_app_bind.model_id == MY_MODEL_ID_AC_SERVER) {
-                ESP_LOGI(TAG, "AC Server model app key bound, starting heartbeat mechanism");
-                
-                /* 假设客户端地址为0x0001，实际应用中需要动态获取 */
-                uint16_t client_addr = 0x0001;
-                esp_err_t err = ac_server_start_heartbeat(client_addr);
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to start heartbeat mechanism (err %d)", err);
-                } else {
-                    ESP_LOGI(TAG, "Heartbeat mechanism started for client 0x%04x", client_addr);
-                }
-            }
-            break;
-        default:
-            break;
-        }
-    }
-}
-
-static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
-                                             esp_ble_mesh_model_cb_param_t *param)
-{
-    esp_err_t err = ESP_OK;
-    uint8_t status_payload = 0;
-    uint32_t status_opcode = 0;
-    uint8_t value_received = 0; // 移动变量声明到函数开始处
-
-    switch (event) {
-    case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        ESP_LOGI(TAG, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d",
-                 param->model_operation.opcode, param->model_operation.ctx->addr,
-                 param->model_operation.ctx->recv_dst, param->model_operation.length);
-
-        switch (param->model_operation.opcode) {
-            case AC_OP_SET_POWER:
-                if (param->model_operation.length == 1) {
-                    value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG, "AC_OP_SET_POWER: value %d", value_received);
-                    err = ac_server_set_power(value_received);
-                    status_payload = ac_server_get_current_power();
-                    status_opcode = AC_OP_POWER_STATUS;
-                } else {
-                    ESP_LOGE(TAG, "AC_OP_SET_POWER: Invalid message length %d, expected 1", param->model_operation.length);
-                    err = ESP_ERR_INVALID_ARG; // Indicate an error
-                }
-                break;
-            case AC_OP_GET_POWER:
-                ESP_LOGI(TAG, "AC_OP_GET_POWER");
-                status_payload = ac_server_get_current_power();
-                status_opcode = AC_OP_POWER_STATUS;
-                break;
-            case AC_OP_SET_TEMPERATURE:
-                if (param->model_operation.length == 1) {
-                    value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG, "AC_OP_SET_TEMPERATURE: value %d", value_received);
-                    err = ac_server_set_temperature(value_received);
-                    status_payload = ac_server_get_current_temperature();
-                    status_opcode = AC_OP_TEMPERATURE_STATUS;
-                } else {
-                    ESP_LOGE(TAG, "AC_OP_SET_TEMPERATURE: Invalid message length %d, expected 1", param->model_operation.length);
-                    err = ESP_ERR_INVALID_ARG;
-                }
-                break;
-            case AC_OP_GET_TEMPERATURE:
-                ESP_LOGI(TAG, "AC_OP_GET_TEMPERATURE");
-                status_payload = ac_server_get_current_temperature();
-                status_opcode = AC_OP_TEMPERATURE_STATUS;
-                break;
-            case AC_OP_SET_MODE:
-                if (param->model_operation.length == 1) {
-                    value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG, "AC_OP_SET_MODE: value %d", value_received);
-                    err = ac_server_set_mode(value_received);
-                    status_payload = ac_server_get_current_mode();
-                    status_opcode = AC_OP_MODE_STATUS;
-                } else {
-                    ESP_LOGE(TAG, "AC_OP_SET_MODE: Invalid message length %d, expected 1", param->model_operation.length);
-                    err = ESP_ERR_INVALID_ARG;
-                }
-                break;
-            case AC_OP_GET_MODE:
-                ESP_LOGI(TAG, "AC_OP_GET_MODE");
-                status_payload = ac_server_get_current_mode();
-                status_opcode = AC_OP_MODE_STATUS;
-                break;
-            case AC_OP_SET_FAN_SPEED:
-                if (param->model_operation.length == 1) {
-                    value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG, "AC_OP_SET_FAN_SPEED: value %d", value_received);
-                    err = ac_server_set_fan_speed(value_received);
-                    status_payload = ac_server_get_current_fan_speed();
-                    status_opcode = AC_OP_FAN_SPEED_STATUS;
-                } else {
-                    ESP_LOGE(TAG, "AC_OP_SET_FAN_SPEED: Invalid message length %d, expected 1", param->model_operation.length);
-                    err = ESP_ERR_INVALID_ARG;
-                }
-                break;
-            case AC_OP_GET_FAN_SPEED:
-                ESP_LOGI(TAG, "AC_OP_GET_FAN_SPEED");
-                status_payload = ac_server_get_current_fan_speed();
-                status_opcode = AC_OP_FAN_SPEED_STATUS;
-                break;
-            case AC_OP_HEARTBEAT_ACK:
-                ESP_LOGI(TAG, "AC_OP_HEARTBEAT_ACK received");
-                ac_server_handle_heartbeat_ack();
-                /* 心跳包ACK不需要回复状态消息 */
-                status_opcode = 0;
-                break;
-            default:
-                ESP_LOGW(TAG, "Unknown opcode 0x%06" PRIx32, param->model_operation.opcode);
-                break;
-        }
-
-        if (err == ESP_OK && status_opcode != 0) {
-            ESP_LOGI(TAG, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x", status_opcode, status_payload);
-            esp_err_t send_err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
-                                                                    param->model_operation.ctx,
-                                                                    status_opcode,
-                                                                    sizeof(status_payload),
-                                                                    &status_payload);
-            if (send_err) {
-                ESP_LOGE(TAG, "Failed to send status message 0x%06" PRIx32 " (err %d)", status_opcode, send_err);
-            }
-        } else if (err != ESP_OK && status_opcode != 0) { // Modified condition: if err but status_opcode was set (i.e. it was a SET op that failed length check)
-             ESP_LOGE(TAG, "Error processing SET operation or invalid length (err %d for opcode 0x%06" PRIx32 "), not sending status.", err, param->model_operation.opcode);
-        } else if (err != ESP_OK && status_opcode == 0) { // If err from a SET op inside ac_server_set_... and not length error
-            ESP_LOGE(TAG, "Error processing SET operation (err %d from ac_server_set_xxx), not sending status for opcode 0x%06" PRIx32 ".", err, param->model_operation.opcode);
-        }
-        break;
-    case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
-        if (param->model_send_comp.err_code) {
-            ESP_LOGE(TAG, "Failed to send message 0x%06" PRIx32 " (err_code %d)", 
-                     param->model_send_comp.opcode, param->model_send_comp.err_code);
-        } else {
-            ESP_LOGI(TAG, "Successfully sent message 0x%06" PRIx32, param->model_send_comp.opcode);
-        }
-        break;
-    case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
-        ESP_LOGW(TAG, "Client model send timeout for opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x",
-                 param->client_send_timeout.opcode,
-                 param->client_send_timeout.ctx->addr,
-                 param->client_send_timeout.ctx->recv_dst);
-        
-        /* 检查是否是心跳包超时 */
-        if (param->client_send_timeout.opcode == AC_OP_HEARTBEAT) {
-            ESP_LOGW(TAG, "Heartbeat timeout detected");
-            ac_server_handle_heartbeat_timeout();
-        }
-        break;
-    default:
-        ESP_LOGW(TAG, "Unhandled model event: %d", event);
-        break;
-    }
-}
-
-static esp_err_t ble_mesh_init(void)
-{
-    esp_err_t err;
-
-    esp_ble_mesh_register_prov_callback(example_ble_mesh_provisioning_cb);
-    esp_ble_mesh_register_config_server_callback(example_ble_mesh_config_server_cb);
-    esp_ble_mesh_register_custom_model_callback(example_ble_mesh_custom_model_cb);
-
-    err = esp_ble_mesh_init(&provision, &composition);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize mesh stack");
-        return err;
-    }
-
-    err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable mesh node");
-        return err;
-    }
-
-    board_led_operation(LED_G, LED_ON);
-
-    ESP_LOGI(TAG, "BLE Mesh Node initialized");
-
-    return ESP_OK;
-}
+#define TAG_MAIN "MAIN_APP" // Renamed TAG to avoid conflict
 
 void app_main(void)
 {
     esp_err_t err;
 
-    ESP_LOGI(TAG, "Initializing...");
+    ESP_LOGI(TAG_MAIN, "Initializing Application...");
 
     err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
@@ -352,18 +37,23 @@ void app_main(void)
 
     board_init();
 
-    err = bluetooth_init();
+    err = bluetooth_init(); // Initializes BT controller and Bluedroid stack
     if (err) {
-        ESP_LOGE(TAG, "esp32_bluetooth_init failed (err %d)", err);
+        ESP_LOGE(TAG_MAIN, "Bluetooth_init failed (err %d)", err);
         return;
     }
 
-    ble_mesh_get_dev_uuid(dev_uuid);
-
-    ac_server_init();
-    /* Initialize the Bluetooth Mesh Subsystem */
-    err = ble_mesh_init();
-    if (err) {
-        ESP_LOGE(TAG, "Bluetooth mesh init failed (err %d)", err);
+    /* 
+     * Initialize the AC BLE Mesh Server Module.
+     * This function now handles all BLE Mesh stack initialization,
+     * model registration, and callback setup.
+     */
+    err = ac_server_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_MAIN, "AC BLE Mesh Server Module init failed (err %d)", err);
+        // Handle initialization failure (e.g., restart, error state)
+        return;
     }
+
+    ESP_LOGI(TAG_MAIN, "Application initialization complete. AC Server is running.");
 }

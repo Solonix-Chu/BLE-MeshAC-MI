@@ -26,7 +26,7 @@ struct esp_ble_mesh_key {
 };
 
 /**
- * @brief Initialize the AC server control interface
+ * @brief Initialize the AC server BLE Mesh module, including BLE stack and models
  * 
  * @return ESP_OK on success
  */
