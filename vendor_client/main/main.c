@@ -19,6 +19,7 @@
 #include "ble_mesh_example_init.h"
 #include "board.h"
 #include "ac_control.h"
+#include "display.h"
 
 #define TAG "Client_Main"
 
@@ -37,6 +38,8 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     board_init(); // Initialize board specific things (LEDs, buttons etc)
+
+    display_init();
 
     // Initialize Bluetooth controller and bluedroid stack 
     err = bluetooth_init(); 

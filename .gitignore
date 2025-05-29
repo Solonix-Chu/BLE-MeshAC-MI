@@ -35,6 +35,7 @@ sdkconfig.old
 /components/bt/
 /components/esptool_py/
 /components/lwip/
+vendor_client/components/lvgl/
 
 # 日志和临时文件
 *.log

@@ -1,5 +1,7 @@
-set(srcs "main.c"
-        "board.c")
+set(SRCS "main.c"
+         "board.c"
+         "ac_control.c"
+         "display.c")
 
-idf_component_register(SRCS "ac_control.c" "${srcs}"
-                    INCLUDE_DIRS  ".")
+idf_component_register(SRCS ${SRCS}
+                    INCLUDE_DIRS ".")
