@@ -14,9 +14,6 @@
 #endif
 
 const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG__SPEED1_ALPHA_15X15 uint8_t _speed1_alpha_15x15_map[] = {
-  0x00, 0x00, 0x00, 0x05, 	/*Color of index 0*/
-  0x00, 0x00, 0x00, 0xc6, 	/*Color of index 1*/
-
   0x00, 0x00, 
   0x01, 0xc0, 
   0x02, 0x80, 
@@ -35,11 +32,11 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG__SPEED1_A
 };
 
 const lv_img_dsc_t _speed1_alpha_15x15 = {
-  .header.cf = LV_IMG_CF_INDEXED_1BIT,
+  .header.cf = LV_IMG_CF_ALPHA_1BIT,
   .header.always_zero = 0,
   .header.reserved = 0,
   .header.w = 15,
   .header.h = 15,
-  .data_size = 38,
+  .data_size = 30,
   .data = _speed1_alpha_15x15_map,
 };
