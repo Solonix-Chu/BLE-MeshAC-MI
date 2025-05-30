@@ -1,1 +1,1 @@
-GEN_CSRCS += _Logo_alpha_135x135.c
+GEN_CSRCS += _Logo_alpha_135x135.c _heart_empty_alpha_18x18.c _heart_real_alpha_18x18.c _speed3_alpha_15x15.c _speed2_alpha_15x15.c _speed1_alpha_15x15.c

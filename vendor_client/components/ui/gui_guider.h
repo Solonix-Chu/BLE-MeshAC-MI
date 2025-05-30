@@ -22,6 +22,19 @@ typedef struct
 	bool screen_del;
 	lv_obj_t *screen_canvas_1;
 	lv_obj_t *screen_logo;
+	lv_obj_t *screen_1;
+	bool screen_1_del;
+	lv_obj_t *screen_1_canvas_1;
+	lv_obj_t *screen_1_TempNum;
+	lv_obj_t *screen_1_DeviceIndex;
+	lv_obj_t *screen_1_TempUnit;
+	lv_obj_t *screen_1_OnOff;
+	lv_obj_t *screen_1_Mode;
+	lv_obj_t *screen_1_HeartEmpty;
+	lv_obj_t *screen_1_HeartReal;
+	lv_obj_t *screen_1_speed3;
+	lv_obj_t *screen_1_speed2;
+	lv_obj_t *screen_1_speed1;
 }lv_ui;
 
 typedef void (*ui_setup_scr_t)(lv_ui * ui);
@@ -46,9 +59,18 @@ extern lv_ui guider_ui;
 
 
 void setup_scr_screen(lv_ui *ui);
+void setup_scr_screen_1(lv_ui *ui);
 LV_IMG_DECLARE(_Logo_alpha_135x135);
+LV_IMG_DECLARE(_heart_empty_alpha_18x18);
+LV_IMG_DECLARE(_heart_real_alpha_18x18);
+LV_IMG_DECLARE(_speed3_alpha_15x15);
+LV_IMG_DECLARE(_speed2_alpha_15x15);
+LV_IMG_DECLARE(_speed1_alpha_15x15);
 
 LV_FONT_DECLARE(lv_font_montserratMedium_16)
+LV_FONT_DECLARE(lv_font_Tanker_55)
+LV_FONT_DECLARE(lv_font_Tanker_16)
+LV_FONT_DECLARE(lv_font_Tanker_18)
 
 
 #ifdef __cplusplus
