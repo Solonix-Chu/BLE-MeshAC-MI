@@ -12,7 +12,7 @@
 #include "gui_guider.h"
 #include "events_init.h"
 #include "widgets_init.h"
-#include "custom.h"
+// #include "custom.h"
 
 
 
@@ -81,7 +81,7 @@ void setup_scr_screen_1(lv_ui *ui)
 
     //Write style for screen_1_DeviceIndex, Part: LV_PART_MAIN, State: LV_STATE_DEFAULT.
     lv_obj_set_style_border_width(ui->screen_1_DeviceIndex, 0, LV_PART_MAIN|LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(ui->screen_1_DeviceIndex,, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui->screen_1_DeviceIndex,1, LV_PART_MAIN|LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(ui->screen_1_DeviceIndex, lv_color_hex(0x000000), LV_PART_MAIN|LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui->screen_1_DeviceIndex, &lv_font_Tanker_16, LV_PART_MAIN|LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui->screen_1_DeviceIndex, 255, LV_PART_MAIN|LV_STATE_DEFAULT);

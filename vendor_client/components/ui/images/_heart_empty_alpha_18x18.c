@@ -14,9 +14,6 @@
 #endif
 
 const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG__HEART_EMPTY_ALPHA_18X18 uint8_t _heart_empty_alpha_18x18_map[] = {
-  0x00, 0x00, 0x00, 0x02, 	/*Color of index 0*/
-  0x00, 0x00, 0x00, 0xc4, 	/*Color of index 1*/
-
   0x00, 0x00, 0x00, 
   0x00, 0x00, 0x00, 
   0x0f, 0x3c, 0x00, 
@@ -38,11 +35,11 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG__HEART_EM
 };
 
 const lv_img_dsc_t _heart_empty_alpha_18x18 = {
-  .header.cf = LV_IMG_CF_INDEXED_1BIT,
+  .header.cf = LV_IMG_CF_ALPHA_1BIT,
   .header.always_zero = 0,
   .header.reserved = 0,
   .header.w = 18,
   .header.h = 18,
-  .data_size = 62,
+  .data_size = 54,
   .data = _heart_empty_alpha_18x18_map,
 };
