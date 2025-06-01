@@ -19,6 +19,8 @@
 #include "ble_mesh_example_init.h" // For bluetooth_init() and ble_mesh_get_dev_uuid() if still used here
 #include "mesh_common.h" // For common definitions like MY_COMPANY_ID etc.
 #include "ac_control.h"  // For ac_server_init()
+#include "display.h"     // For display_init()
+#include "ui_update.h"   // For ui_update_init()
 
 #define TAG_MAIN "MAIN_APP" // Renamed TAG to avoid conflict
 
@@ -37,6 +39,10 @@ void app_main(void)
 
     board_init();
 
+    // Initialize display and UI
+    ESP_LOGI(TAG_MAIN, "Initializing display...");
+    display_init();
+
     err = bluetooth_init(); // Initializes BT controller and Bluedroid stack
     if (err) {
         ESP_LOGE(TAG_MAIN, "Bluetooth_init failed (err %d)", err);
@@ -53,6 +59,13 @@ void app_main(void)
         ESP_LOGE(TAG_MAIN, "AC BLE Mesh Server Module init failed (err %d)", err);
         // Handle initialization failure (e.g., restart, error state)
         return;
+    }
+
+    // Initialize UI update module after BLE Mesh is ready
+    ESP_LOGI(TAG_MAIN, "Initializing UI update module...");
+    err = ui_update_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_MAIN, "UI update init failed (err %d), continuing without UI updates", err);
     }
 
     ESP_LOGI(TAG_MAIN, "Application initialization complete. AC Server is running.");

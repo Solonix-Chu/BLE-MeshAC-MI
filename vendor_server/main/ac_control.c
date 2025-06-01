@@ -16,6 +16,7 @@
 #include "mesh_common.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "ui_update.h"  // For UI update functions
 
 #define TAG_AC_CTRL "AC_SERVER_CTRL"
 
@@ -75,7 +76,7 @@ static struct {
     .power = AC_POWER_OFF,
     .temperature = 25,
     .mode = AC_MODE_COOL,
-    .fan_speed = AC_FAN_SPEED_AUTO
+    .fan_speed = AC_FAN_SPEED_LOW
 };
 
 /* 定义模型操作项 */
@@ -373,6 +374,7 @@ esp_err_t ac_server_set_power(uint8_t power_state)
     }
     ac_state.power = power_state;
     ESP_LOGI(TAG_AC_CTRL, "空调电源设置为: %s", power_state == AC_POWER_ON ? "开启" : "关闭");
+    ui_update_ac_status();
     return ESP_OK;
 }
 
@@ -387,6 +389,7 @@ esp_err_t ac_server_set_temperature(uint8_t temperature)
     }
     ac_state.temperature = temperature;
     ESP_LOGI(TAG_AC_CTRL, "空调温度设置为: %d°C", temperature);
+    ui_update_ac_status();
     return ESP_OK;
 }
 
@@ -410,6 +413,7 @@ esp_err_t ac_server_set_mode(uint8_t mode)
         default: mode_str = "未知"; break;
     }
     ESP_LOGI(TAG_AC_CTRL, "空调模式设置为: %s", mode_str);
+    ui_update_ac_status();
     return ESP_OK;
 }
 
@@ -425,13 +429,13 @@ esp_err_t ac_server_set_fan_speed(uint8_t fan_speed)
     ac_state.fan_speed = fan_speed;
     const char *speed_str;
     switch (fan_speed) {
-        case AC_FAN_SPEED_AUTO:   speed_str = "自动"; break;
         case AC_FAN_SPEED_LOW:    speed_str = "低速"; break;
         case AC_FAN_SPEED_MEDIUM: speed_str = "中速"; break;
         case AC_FAN_SPEED_HIGH:   speed_str = "高速"; break;
         default: speed_str = "未知"; break;
     }
     ESP_LOGI(TAG_AC_CTRL, "空调风速设置为: %s", speed_str);
+    ui_update_ac_status();
     return ESP_OK;
 }
 
@@ -450,6 +454,7 @@ esp_err_t ac_server_set_all(uint8_t power, uint8_t temperature, uint8_t mode, ui
     err = ac_server_set_fan_speed(fan_speed);
     if (err != ESP_OK) return err;
     ESP_LOGI(TAG_AC_CTRL, "空调所有参数设置完成");
+    ui_update_ac_status();
     return ESP_OK;
 }
 
@@ -537,6 +542,7 @@ esp_err_t ac_server_start_heartbeat(uint16_t client_addr)
         return err;
     }
     ESP_LOGI(TAG_AC_CTRL, "Heartbeat started for client 0x%04x", client_addr);
+    ui_update_connection_status(true);
     return ESP_OK;
 }
 
@@ -554,6 +560,7 @@ esp_err_t ac_server_stop_heartbeat(void)
     heartbeat_state.is_connected = false;
     heartbeat_state.timeout_count = 0;
     ESP_LOGI(TAG_AC_CTRL, "Heartbeat stopped");
+    ui_update_connection_status(false);
     return ESP_OK;
 }
 
@@ -598,10 +605,13 @@ void ac_server_handle_heartbeat_timeout(void)
                  heartbeat_state.client_addr, MAX_HEARTBEAT_TIMEOUTS);
         
         board_led_operation(LED_STATE_ERROR);
+        ui_update_connection_status(false);
         ac_server_stop_heartbeat();
         ESP_LOGI(TAG_AC_CTRL, "Restarting device now due to heartbeat timeout.");
         esp_restart();
     } else {
+        // Update UI to show connection issues
+        ui_update_connection_status(false);
     }
 }
 
@@ -614,6 +624,7 @@ void ac_server_handle_heartbeat_ack(void)
         heartbeat_state.timeout_count = 0;
         ESP_LOGI(TAG_AC_CTRL, "Heartbeat ACK received from client 0x%04x. Connection healthy.", heartbeat_state.client_addr);
         board_led_operation(LED_STATE_SUCCESS);
+        ui_update_connection_status(true);
     } else {
         ESP_LOGW(TAG_AC_CTRL, "Heartbeat ACK received but heartbeat not active/connected for client 0x%04x", heartbeat_state.client_addr);
     }
