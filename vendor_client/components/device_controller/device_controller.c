@@ -18,6 +18,9 @@ static void button_event_handler(dc_event_t event, void *user_data);
 static void state_change_handler(dc_state_t old_state, dc_state_t new_state, void *user_data);
 static void display_update_handler(dc_context_t *context, void *user_data);
 static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t param, int32_t value, void *user_data);
+static esp_err_t initialize_multiple_devices(void);
+static esp_err_t handle_device_switch(const dc_context_t *context);
+static void show_device_switch_animation(uint8_t old_device_idx, uint8_t new_device_idx);
 
 // UI integration callbacks
 static void ui_screen_changed_handler(dc_ui_screen_t screen);
@@ -42,6 +45,11 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
     // Get current context for UI updates
     const dc_context_t *context = dc_state_machine_get_context();
     
+    // Check for device switch first (can happen in any state)
+    if (context) {
+        handle_device_switch(context);
+    }
+    
     // Handle specific state transitions
     switch (new_state) {
         case DC_STATE_IDLE:
@@ -62,10 +70,10 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
                             (device->status.mode == 1) ? "HEAT" : 
                             (device->status.mode == 2) ? "FAN" : 
                             (device->status.mode == 3) ? "DRY" : "AUTO");
-                    ESP_LOGI(TAG, "Fan:    %s", (device->status.fan_speed == 0) ? "AUTO" : 
-                            (device->status.fan_speed == 1) ? "LOW" : 
+                    ESP_LOGI(TAG, "Fan:    %s", (device->status.fan_speed == 1) ? "LOW" : 
                             (device->status.fan_speed == 2) ? "MED" : "HIGH");
                     ESP_LOGI(TAG, "");
+                    ESP_LOGI(TAG, "LEFT/RIGHT: Switch Device");
                     ESP_LOGI(TAG, "DOUBLE-CLICK: Enter Menu");
                     ESP_LOGI(TAG, "===================");
                 }
@@ -124,8 +132,7 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
                             break;
                         case DC_PARAM_FAN_SPEED:
                             param_name = "Fan Speed";
-                            param_value = (context->editing_value == 0) ? "AUTO" : 
-                                        (context->editing_value == 1) ? "LOW" : 
+                            param_value = (context->editing_value == 1) ? "LOW" : 
                                         (context->editing_value == 2) ? "MED" : "HIGH";
                             break;
                         case DC_PARAM_MODE:
@@ -142,6 +149,7 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
                     }
                     
                     ESP_LOGI(TAG, "=== VALUE ADJUSTMENT ===");
+                    ESP_LOGI(TAG, "Device: %s", device->device_name);
                     ESP_LOGI(TAG, "Parameter: %s", param_name);
                     ESP_LOGI(TAG, "Value: >>> %s <<<", param_value);
                     ESP_LOGI(TAG, "");
@@ -290,6 +298,125 @@ static void ui_boot_complete_handler(void)
     }
 }
 
+// Initialize multiple devices with different configurations
+static esp_err_t initialize_multiple_devices(void)
+{
+    esp_err_t ret = ESP_OK;
+    
+    // Device 1: Living Room AC
+    dc_device_info_t device1 = {
+        .device_id = 0,
+        .device_name = "Living Room AC",
+        .is_online = true,
+        .status = {
+            .power = true,
+            .temperature = 22,
+            .mode = DEVICE_CONTROLLER_MODE_COOL,
+            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_MEDIUM
+        }
+    };
+    
+    ret = dc_state_machine_set_device_info(0, &device1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set device 1 info: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Device 2: Bedroom AC
+    dc_device_info_t device2 = {
+        .device_id = 1,
+        .device_name = "Bedroom AC",
+        .is_online = true,
+        .status = {
+            .power = false,
+            .temperature = 25,
+            .mode = DEVICE_CONTROLLER_MODE_AUTO,
+            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_LOW
+        }
+    };
+    
+    ret = dc_state_machine_set_device_info(1, &device2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set device 2 info: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Device 3: Kitchen AC
+    dc_device_info_t device3 = {
+        .device_id = 2,
+        .device_name = "Kitchen AC",
+        .is_online = false,
+        .status = {
+            .power = false,
+            .temperature = 26,
+            .mode = DEVICE_CONTROLLER_MODE_FAN,
+            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_HIGH
+        }
+    };
+    
+    ret = dc_state_machine_set_device_info(2, &device3);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set device 3 info: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    ESP_LOGI(TAG, "Initialized 3 devices successfully (Living Room, Bedroom, Kitchen)");
+    return ESP_OK;
+}
+
+// Handle device switching with animation
+static esp_err_t handle_device_switch(const dc_context_t *context)
+{
+    if (!context) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    static uint8_t previous_device_idx = 0;
+    
+    if (previous_device_idx != context->current_device_idx) {
+        ESP_LOGI(TAG, "Device switched from %d to %d", previous_device_idx, context->current_device_idx);
+        
+        // Show switching animation
+        show_device_switch_animation(previous_device_idx, context->current_device_idx);
+        
+        // Get new device info
+        const dc_device_info_t *new_device = dc_state_machine_get_device_info(context->current_device_idx);
+        if (new_device) {
+            ESP_LOGI(TAG, "=== SWITCHED TO DEVICE %d ===", context->current_device_idx + 1);
+            ESP_LOGI(TAG, "Device: %s", new_device->device_name);
+            ESP_LOGI(TAG, "Status: %s", new_device->is_online ? "ONLINE" : "OFFLINE");
+            ESP_LOGI(TAG, "Power:  %s", new_device->status.power ? "ON" : "OFF");
+            ESP_LOGI(TAG, "Temp:   %ld°C", new_device->status.temperature);
+            ESP_LOGI(TAG, "Mode:   %s", (new_device->status.mode == 0) ? "COOL" : 
+                    (new_device->status.mode == 1) ? "HEAT" : 
+                    (new_device->status.mode == 2) ? "FAN" : 
+                    (new_device->status.mode == 3) ? "DRY" : "AUTO");
+            ESP_LOGI(TAG, "Fan:    %s", (new_device->status.fan_speed == 1) ? "LOW" : 
+                    (new_device->status.fan_speed == 2) ? "MED" : "HIGH");
+            ESP_LOGI(TAG, "============================");
+        }
+        
+        previous_device_idx = context->current_device_idx;
+    }
+    
+    return ESP_OK;
+}
+
+// Show device switch animation
+static void show_device_switch_animation(uint8_t old_device_idx, uint8_t new_device_idx)
+{
+    // Use the dedicated UI integration function for device switching (slide animation only)
+    esp_err_t ret = dc_ui_integration_show_device_switch(old_device_idx, new_device_idx);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to show device switch animation: %s", esp_err_to_name(ret));
+        // Fallback: just refresh main screen
+        dc_ui_integration_show_main_screen();
+    }
+    
+    ESP_LOGI(TAG, "Device switch animation: %d → %d", 
+             old_device_idx + 1, new_device_idx + 1);
+}
+
 esp_err_t device_controller_init(void)
 {
     if (s_initialized) {
@@ -336,24 +463,14 @@ esp_err_t device_controller_init(void)
         return ret;
     }
     
-    // Initialize default device information
-    dc_device_info_t default_device = {
-        .device_id = 0,
-        .device_name = "AC Unit 1",
-        .is_online = true,
-        .status = {
-            .power = false,
-            .temperature = 24,
-            .mode = DEVICE_CONTROLLER_MODE_AUTO,
-            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_LOW
-        }
-    };
-    
-    ret = dc_state_machine_set_device_info(0, &default_device);
+    // Initialize multiple devices with different configurations
+    ret = initialize_multiple_devices();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set default device info: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "Default device information initialized");
+        ESP_LOGE(TAG, "Failed to initialize multiple devices: %s", esp_err_to_name(ret));
+        dc_state_machine_deinit();
+        dc_buttons_deinit();
+        dc_ui_integration_deinit();
+        return ret;
     }
     
     // Register button callback
@@ -367,7 +484,8 @@ esp_err_t device_controller_init(void)
     }
     
     s_initialized = true;
-    ESP_LOGI(TAG, "Device controller initialized successfully");
+    ESP_LOGI(TAG, "Device controller initialized successfully with %d devices", 
+             dc_state_machine_get_device_count());
     
     return ESP_OK;
 }

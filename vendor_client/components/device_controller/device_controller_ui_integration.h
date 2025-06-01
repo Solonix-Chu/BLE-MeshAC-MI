@@ -68,6 +68,15 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
 esp_err_t dc_ui_integration_show_main_screen(void);
 
 /**
+ * @brief Show device switching animation
+ * 
+ * @param old_device_idx Previous device index
+ * @param new_device_idx New device index
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t dc_ui_integration_show_device_switch(uint8_t old_device_idx, uint8_t new_device_idx);
+
+/**
  * @brief Show menu navigation indicators
  * 
  * @param selected_param Currently selected parameter

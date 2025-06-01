@@ -833,9 +833,9 @@ esp_err_t dc_ui_integration_show_main_screen(void)
         setup_scr_screen_1(s_ui_state.ui);
     }
     
-    // Load main screen
+    // Load main screen with simple fade-in animation
     if (s_ui_state.ui->screen_1) {
-        lv_scr_load_anim(s_ui_state.ui->screen_1, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, true);
+        lv_scr_load_anim(s_ui_state.ui->screen_1, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, true);
     } else {
         ESP_LOGE(TAG, "Main screen (ui->screen_1) is not available");
         return ESP_ERR_INVALID_STATE;
@@ -857,6 +857,23 @@ esp_err_t dc_ui_integration_show_main_screen(void)
     }
     
     ESP_LOGI(TAG, "Switched to main screen");
+    return ESP_OK;
+}
+
+esp_err_t dc_ui_integration_show_device_switch(uint8_t old_device_idx, uint8_t new_device_idx)
+{
+    if (!s_ui_state.is_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    ESP_LOGI(TAG, "Device switched: %d → %d", old_device_idx + 1, new_device_idx + 1);
+    
+    // Simply update the display with new device information
+    const dc_context_t *context = dc_state_machine_get_context();
+    if (context) {
+        force_refresh_ui_display(context);
+    }
+    
     return ESP_OK;
 }
 
