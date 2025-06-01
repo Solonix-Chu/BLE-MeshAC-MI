@@ -8,9 +8,8 @@
  */
 
 #include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
-
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
@@ -20,6 +19,7 @@
 #include "board.h"
 #include "ac_control.h"
 #include "display.h"
+#include "device_controller.h"
 
 #define TAG "Client_Main"
 
@@ -28,7 +28,7 @@ void app_main(void)
     esp_err_t err;
 
     ESP_LOGI(TAG, "Initializing Client...");
-
+    
     // Initialize NVS Flash - this is a prerequisite for BLE Mesh stack typically.
     err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -36,11 +36,12 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
-
+    
     board_init(); // Initialize board specific things (LEDs, buttons etc)
 
     display_init();
-
+    ESP_LOGI(TAG, "Display initialized successfully");
+    
     // Initialize Bluetooth controller and bluedroid stack 
     err = bluetooth_init(); 
     if (err != ESP_OK) {
@@ -52,9 +53,24 @@ void app_main(void)
     err = ac_client_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "AC BLE Mesh client init failed (err %d)", err);
-        return; 
+        return;
     }
-
+    
+    // Initialize device controller
+    err = device_controller_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize device controller: %s", esp_err_to_name(err));
+        return;
+    }
+    
+    // Start device controller
+    err = device_controller_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start device controller: %s", esp_err_to_name(err));
+        device_controller_deinit();
+        return;
+    }
+    
     ESP_LOGI(TAG, "Client Initialization Complete.");
 
     // Example usage (optional):
@@ -74,6 +90,6 @@ void app_main(void)
                      i, add,
                      ac_is_server_online(add) ? "yes" : "no");
         }
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }

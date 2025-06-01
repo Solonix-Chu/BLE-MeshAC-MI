@@ -479,7 +479,7 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed)
     esp_err_t err = ESP_OK;
 
     if (fan_speed > AC_FAN_SPEED_HIGH) {
-        fan_speed = AC_FAN_SPEED_AUTO;
+        fan_speed = AC_FAN_SPEED_LOW;
     }
     msg = fan_speed;
 

@@ -4,5 +4,5 @@ set(SRCS "main.c"
          "display.c")
 
 idf_component_register(SRCS ${SRCS}
-                    INCLUDE_DIRS "."
-                    REQUIRES lvgl ui)
+                       INCLUDE_DIRS "."
+                    REQUIRES lvgl ui device_controller bt)

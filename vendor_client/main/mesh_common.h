@@ -48,10 +48,9 @@ extern "C" {
 #define AC_MODE_AUTO            0x04
 
 /* AC Fan Speed Definitions */
-#define AC_FAN_SPEED_AUTO       0x00
-#define AC_FAN_SPEED_LOW        0x01
-#define AC_FAN_SPEED_MEDIUM     0x02
-#define AC_FAN_SPEED_HIGH       0x03
+#define AC_FAN_SPEED_LOW        0x00
+#define AC_FAN_SPEED_MEDIUM     0x01
+#define AC_FAN_SPEED_HIGH       0x02
 
 /* AC Power State */
 #define AC_POWER_OFF            0x00

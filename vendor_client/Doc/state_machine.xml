@@ -1,0 +1,108 @@
+<mxGraphModel dx="1426" dy="795" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    <mxCell id="START" value="Start" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="40" y="280" width="80" height="80" as="geometry" />
+    </mxCell>
+    <mxCell id="S_IDLE" value="S_IDLE&lt;br&gt;主界面模式 - 普通待机&lt;br&gt;Display: Current device status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="200" y="260" width="180" height="120" as="geometry" />
+    </mxCell>
+    <mxCell id="S_MENU_NAVIGATE" value="S_MENU_NAVIGATE&lt;br&gt;选择设置模式&lt;br&gt;Display: Settings item blinking" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="480" y="80" width="180" height="120" as="geometry" />
+    </mxCell>
+    <mxCell id="S_VALUE_ADJUST" value="S_VALUE_ADJUST&lt;br&gt;参数调整模式&lt;br&gt;Display: Adjusting selected parameter value" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+      <mxGeometry x="480" y="440" width="180" height="120" as="geometry" />
+    </mxCell>
+    <mxCell id="edge-start-idle" value="Initial" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="START" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="edge-idle-menu" value="Center Button (Double Click)&lt;br&gt;Actions:&lt;br&gt;1. Init menu (first item selected)&lt;br&gt;2. Update display (blink selected)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_IDLE" target="S_MENU_NAVIGATE">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="390" y="140" as="targetPoint" />
+         <Array as="points">
+            <mxPoint x="320" y="220"/>
+            <mxPoint x="320" y="140"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-idle-self" value="Up/Left or Down/Right Button&lt;br&gt;Actions:&lt;br&gt;1. Switch device (if multi-device)&lt;br&gt;2. Refresh display" style="edgeStyle=loopEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_IDLE" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="280" y="200" as="sourcePoint" />
+        <mxPoint x="340" y="200" as="targetPoint" />
+        <Array as="points">
+          <mxPoint x="290" y="220" />
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-menu-self" value="Up/Left or Down/Right Button&lt;br&gt;Actions:&lt;br&gt;1. Cycle blinking menu item&lt;br&gt;2. Update display (blink new item)" style="edgeStyle=loopEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_MENU_NAVIGATE" target="S_MENU_NAVIGATE">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="560" y="20" as="sourcePoint" />
+        <mxPoint x="620" y="20" as="targetPoint" />
+         <Array as="points">
+            <mxPoint x="570" y="40" />
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-menu-adjust" value="Center Button (Single Click)&lt;br&gt;Actions:&lt;br&gt;1. Confirm selected parameter&lt;br&gt;2. Read current value&lt;br&gt;3. Update display (prepare for adjustment)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_MENU_NAVIGATE" target="S_VALUE_ADJUST">
+      <mxGeometry relative="1" as="geometry">
+         <Array as="points">
+            <mxPoint x="570" y="300"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-menu-idle-timeout" value="Timeout&lt;br&gt;Action: Return to Idle" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_MENU_NAVIGATE" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+         <Array as="points">
+            <mxPoint x="440" y="170"/>
+            <mxPoint x="440" y="400"/>
+            <mxPoint x="245" y="400"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-menu-idle-doubleclick" value="Center Button (Double Click)&lt;br&gt;Action: Return to Idle (Quick Exit)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_MENU_NAVIGATE" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+            <mxPoint x="420" y="110"/>
+            <mxPoint x="420" y="420"/>
+            <mxPoint x="335" y="420"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-adjust-self" value="Up/Left or Down/Right Button&lt;br&gt;Actions:&lt;br&gt;1. Modify value (inc/dec/cycle)&lt;br&gt;2. Update display (show new value)" style="edgeStyle=loopEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_VALUE_ADJUST" target="S_VALUE_ADJUST">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="560" y="620" as="sourcePoint" />
+        <mxPoint x="620" y="620" as="targetPoint" />
+        <Array as="points">
+            <mxPoint x="570" y="580" />
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-adjust-idle-singleclick" value="Center Button (Single Click)&lt;br&gt;Actions:&lt;br&gt;1. Apply new value&lt;br&gt;2. Send command&lt;br&gt;3. (Optional) Show &quot;SET OK&quot;&lt;br&gt;4. Return to Idle" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="S_VALUE_ADJUST" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+         <Array as="points">
+             <mxPoint x="320" y="500"/>
+            <mxPoint x="320" y="380"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-adjust-idle-timeout" value="Timeout&lt;br&gt;Actions:&lt;br&gt;1. Discard unsaved value&lt;br&gt;2. Return to Idle" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_VALUE_ADJUST" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+            <mxPoint x="525" y="420"/>
+            <mxPoint x="400" y="420"/>
+            <mxPoint x="400" y="350"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="edge-adjust-idle-doubleclick" value="Center Button (Double Click)&lt;br&gt;Actions:&lt;br&gt;1. Discard unsaved value&lt;br&gt;2. Return to Idle (Quick Exit)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="S_VALUE_ADJUST" target="S_IDLE">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+            <mxPoint x="615" y="400"/>
+            <mxPoint x="420" y="400"/>
+            <mxPoint x="420" y="290"/>
+          </Array>
+      </mxGeometry>
+    </mxCell>
+  </root>
+</mxGraphModel>

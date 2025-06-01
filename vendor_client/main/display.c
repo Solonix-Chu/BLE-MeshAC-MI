@@ -87,6 +87,15 @@ void display_init(void)
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    
+    // Clear display before turning it on
+    ESP_LOGI(TAG, "Clear display");
+    uint8_t *buffer = heap_caps_calloc(1, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES / 8, MALLOC_CAP_DEFAULT);
+    if (buffer) {
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES, buffer));
+        free(buffer);
+    }
+    
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
     ESP_LOGI(TAG, "Initialize LVGL");
@@ -134,7 +143,7 @@ void display_init(void)
     // Lock the LVGL mutex before calling UI functions
     if (lvgl_port_lock(0)) {
         // setup_ui now uses the guider_ui declared as extern (and defined in gui_guider.c)
-        setup_ui(&guider_ui); 
+        // setup_ui(&guider_ui); 
         lvgl_port_unlock();
         ESP_LOGI(TAG, "UI setup complete.");
     } else {
