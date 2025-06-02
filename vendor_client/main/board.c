@@ -30,7 +30,10 @@ static void button_tap_cb(void *button_handle, void *user_data)
     ESP_LOGI(TAG, "Button (GPIO %d) tap event!", BUTTON_IO_NUM);
     
     // example_ble_mesh_send_vendor_message(false);
-    ac_client_set_power(0x0005, AC_POWER_ON);
+    static uint8_t power_state = 0;
+
+    ac_client_set_power(0x0005, power_state);
+    power_state = !power_state;
 }
 
 static void board_button_init(void)

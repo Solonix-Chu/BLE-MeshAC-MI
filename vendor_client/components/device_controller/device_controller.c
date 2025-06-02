@@ -7,6 +7,11 @@
 #include "device_controller_types.h"
 #include "gui_guider.h"
 #include "esp_log.h"
+#include "ac_control.h"
+#include <string.h>
+#include <ctype.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "DEVICE_CONTROLLER";
 
@@ -25,6 +30,15 @@ static void show_device_switch_animation(uint8_t old_device_idx, uint8_t new_dev
 // UI integration callbacks
 static void ui_screen_changed_handler(dc_ui_screen_t screen);
 static void ui_boot_complete_handler(void);
+
+// AC control callbacks
+static void ac_device_status_callback(uint16_t device_addr, ac_status_type_t status_type, uint8_t value);
+static void ac_device_online_callback(uint16_t device_addr, bool is_online);
+static void ac_device_provisioned_callback(uint16_t device_addr);
+static void sync_device_info_from_ac_control(void);
+static void sync_single_device_status(uint16_t device_addr);
+static void sync_all_devices_status(void);
+static uint16_t get_device_addr_by_index(uint8_t index);
 
 // Button event handler
 static void button_event_handler(dc_event_t event, void *user_data)
@@ -181,16 +195,28 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
 {
     const char *param_name;
     char msg[64];
+    esp_err_t ret = ESP_OK;
+    
+    // Get device address for BLE mesh communication
+    uint16_t device_addr = get_device_addr_by_index(device_id);
+    if (device_addr == ESP_BLE_MESH_ADDR_UNASSIGNED) {
+        ESP_LOGE(TAG, "Invalid device index %d", device_id);
+        return ESP_ERR_INVALID_ARG;
+    }
     
     switch (param) {
         case DC_PARAM_POWER:
             param_name = "Power";
             snprintf(msg, sizeof(msg), "%s: %s", param_name, value ? "ON" : "OFF");
+            // Send power command via BLE mesh
+            ret = ac_client_set_power(device_addr, (uint8_t)value);
             break;
             
         case DC_PARAM_TEMPERATURE:
             param_name = "Temperature";
             snprintf(msg, sizeof(msg), "%s: %ld°C", param_name, value);
+            // Send temperature command via BLE mesh
+            ret = ac_client_set_temperature(device_addr, (uint8_t)value);
             break;
             
         case DC_PARAM_FAN_SPEED:
@@ -198,6 +224,8 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
             const char *fan_names[] = {"Auto", "Low", "Medium", "High"};
             snprintf(msg, sizeof(msg), "%s: %s", param_name, 
                     (value >= 0 && value < 4) ? fan_names[value] : "Unknown");
+            // Send fan speed command via BLE mesh
+            ret = ac_client_set_fan_speed(device_addr, (uint8_t)value);
             break;
             
         case DC_PARAM_MODE:
@@ -205,24 +233,32 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
             const char *mode_names[] = {"Cool", "Heat", "Fan", "Dry", "Auto"};
             snprintf(msg, sizeof(msg), "%s: %s", param_name, 
                     (value >= 0 && value < 5) ? mode_names[value] : "Unknown");
+            // Send mode command via BLE mesh
+            ret = ac_client_set_mode(device_addr, (uint8_t)value);
             break;
             
         default:
             snprintf(msg, sizeof(msg), "Parameter %d: %ld", param, value);
-            break;
+            ESP_LOGW(TAG, "Unknown parameter type: %d", param);
+            return ESP_ERR_INVALID_ARG;
     }
     
+    if (ret == ESP_OK) {
     // Show "SET OK" message briefly
     dc_ui_integration_show_message("SET OK", 500);
+        ESP_LOGI(TAG, "Successfully sent command to device 0x%04X: %s", device_addr, msg);
+    } else {
+        // Show error message
+        dc_ui_integration_show_message("SET ERROR", 1000);
+        ESP_LOGE(TAG, "Failed to send command to device 0x%04X: %s (error: %s)", 
+                device_addr, msg, esp_err_to_name(ret));
+    }
     
-    // Here you would typically send the command to the actual device
-    // For demonstration, we just log it
-    ESP_LOGI(TAG, "Sending command to device %d: %s", device_id, msg);
-    
-    return ESP_OK;
+    return ret;
 }
 
 // Get parameter display string
+__attribute__((unused))
 static const char* get_param_display_string(const dc_device_info_t *device, dc_parameter_t param)
 {
     static char str_buffer[32];
@@ -290,12 +326,202 @@ static void ui_boot_complete_handler(void)
 {
     ESP_LOGI(TAG, "Boot sequence completed - device controller fully operational");
     
+    // Sync device information from AC control after boot
+    sync_device_info_from_ac_control();
+    
     // Start device controller operations
     const dc_context_t *context = dc_state_machine_get_context();
     if (context) {
         // Update display with initial device state
         dc_ui_integration_update_display((dc_context_t*)context);
     }
+    
+    // Sync status from all online devices after boot complete
+    ESP_LOGI(TAG, "Boot complete, syncing status from all online devices...");
+    // Add delay to ensure all systems are ready
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    sync_all_devices_status();
+}
+
+// AC device status change callback
+static void ac_device_status_callback(uint16_t device_addr, ac_status_type_t status_type, uint8_t value)
+{
+    ESP_LOGI(TAG, "AC device 0x%04X status updated: type %d = %d", device_addr, status_type, value);
+    
+    // Find device index by address
+    uint8_t device_count = ac_get_device_count();
+    for (uint8_t i = 0; i < device_count; i++) {
+        if (get_device_addr_by_index(i) == device_addr) {
+            // Update device status in state machine
+            const dc_device_info_t *current_device = dc_state_machine_get_device_info(i);
+            if (current_device) {
+                dc_device_info_t updated_device = *current_device;
+                
+                switch (status_type) {
+                    case AC_STATUS_POWER:
+                        updated_device.status.power = value;
+                        break;
+                    case AC_STATUS_TEMPERATURE:
+                        updated_device.status.temperature = value;
+                        break;
+                    case AC_STATUS_MODE:
+                        updated_device.status.mode = value;
+                        break;
+                    case AC_STATUS_FAN_SPEED:
+                        updated_device.status.fan_speed = value;
+                        break;
+                }
+                
+                dc_state_machine_set_device_info(i, &updated_device);
+                
+                // Update UI if this is the current device
+                const dc_context_t *context = dc_state_machine_get_context();
+                if (context && context->current_device_idx == i) {
+                    dc_ui_integration_update_display((dc_context_t*)context);
+                }
+            }
+            break;
+        }
+    }
+}
+
+// AC device online status change callback
+static void ac_device_online_callback(uint16_t device_addr, bool is_online)
+{
+    ESP_LOGI(TAG, "AC device 0x%04X is now %s", device_addr, is_online ? "ONLINE" : "OFFLINE");
+    
+    // Find device index by address
+    uint8_t device_count = ac_get_device_count();
+    for (uint8_t i = 0; i < device_count; i++) {
+        if (get_device_addr_by_index(i) == device_addr) {
+            // Update device online status
+            const dc_device_info_t *current_device = dc_state_machine_get_device_info(i);
+            if (current_device) {
+                dc_device_info_t updated_device = *current_device;
+                updated_device.is_online = is_online;
+                dc_state_machine_set_device_info(i, &updated_device);
+                
+                // Update UI if this is the current device
+                const dc_context_t *context = dc_state_machine_get_context();
+                if (context && context->current_device_idx == i) {
+                    dc_ui_integration_update_display((dc_context_t*)context);
+                }
+                
+                // Show status message
+                char msg[32];
+                snprintf(msg, sizeof(msg), "Device %s", is_online ? "ONLINE" : "OFFLINE");
+                dc_ui_integration_show_message(msg, 1000);
+                
+                // If device came online, sync its status
+                if (is_online) {
+                    ESP_LOGI(TAG, "Device 0x%04X came online, syncing status...", device_addr);
+                    // Add a small delay to ensure the device is ready
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    sync_single_device_status(device_addr);
+                }
+            }
+            break;
+        }
+    }
+}
+
+// AC device provisioned callback
+static void ac_device_provisioned_callback(uint16_t device_addr)
+{
+    ESP_LOGI(TAG, "New AC device 0x%04X provisioned!", device_addr);
+    
+    // Refresh device list and reinitialize
+    sync_device_info_from_ac_control();
+    
+    // Show message to user
+    dc_ui_integration_show_message("New Device", 2000);
+    
+    // Sync status of the newly provisioned device
+    ESP_LOGI(TAG, "New device 0x%04X provisioned, syncing status...", device_addr);
+    // Add delay to ensure device is fully ready after provisioning
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    sync_single_device_status(device_addr);
+}
+
+// Sync device information from AC control module
+static void sync_device_info_from_ac_control(void)
+{
+    ESP_LOGI(TAG, "Syncing device information from AC control");
+    
+    // Re-initialize devices with current AC control data
+    esp_err_t ret = initialize_multiple_devices();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to sync device information: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+    // Update UI
+    const dc_context_t *context = dc_state_machine_get_context();
+    if (context) {
+        dc_ui_integration_update_display((dc_context_t*)context);
+    }
+}
+
+// Sync single device status from server
+static void sync_single_device_status(uint16_t device_addr)
+{
+    ESP_LOGI(TAG, "Syncing status for device 0x%04X", device_addr);
+    
+    // Request all status information from the device
+    esp_err_t ret;
+    
+    ret = ac_client_get_power(device_addr);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to request power status from 0x%04X: %s", 
+                device_addr, esp_err_to_name(ret));
+    }
+    
+    ret = ac_client_get_temperature(device_addr);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to request temperature status from 0x%04X: %s", 
+                device_addr, esp_err_to_name(ret));
+    }
+    
+    ret = ac_client_get_mode(device_addr);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to request mode status from 0x%04X: %s", 
+                device_addr, esp_err_to_name(ret));
+    }
+    
+    ret = ac_client_get_fan_speed(device_addr);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to request fan speed status from 0x%04X: %s", 
+                device_addr, esp_err_to_name(ret));
+    }
+    
+    ESP_LOGI(TAG, "Status sync requests sent for device 0x%04X", device_addr);
+}
+
+// Sync all online devices status
+static void sync_all_devices_status(void)
+{
+    ESP_LOGI(TAG, "Syncing status for all online devices");
+    
+    uint8_t device_count = ac_get_device_count();
+    for (uint8_t i = 0; i < device_count; i++) {
+        uint16_t device_addr = get_device_addr_by_index(i);
+        if (device_addr != ESP_BLE_MESH_ADDR_UNASSIGNED) {
+            // Check if device is online before requesting status
+            if (ac_is_server_online(device_addr)) {
+                sync_single_device_status(device_addr);
+                // Add small delay between requests to avoid overwhelming the mesh network
+                vTaskDelay(pdMS_TO_TICKS(100));
+            } else {
+                ESP_LOGD(TAG, "Skipping offline device 0x%04X", device_addr);
+            }
+        }
+    }
+}
+
+// Get device address by index
+static uint16_t get_device_addr_by_index(uint8_t index)
+{
+    return ac_get_server_addr_by_index(index);
 }
 
 // Initialize multiple devices with different configurations
@@ -303,64 +529,127 @@ static esp_err_t initialize_multiple_devices(void)
 {
     esp_err_t ret = ESP_OK;
     
-    // Device 1: Living Room AC
-    dc_device_info_t device1 = {
-        .device_id = 0,
-        .device_name = "Living Room AC",
-        .is_online = true,
-        .status = {
-            .power = true,
-            .temperature = 22,
-            .mode = DEVICE_CONTROLLER_MODE_COOL,
-            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_MEDIUM
-        }
-    };
+    // Get actual device count from AC control
+    uint8_t device_count = ac_get_device_count();
     
-    ret = dc_state_machine_set_device_info(0, &device1);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set device 1 info: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // Device 2: Bedroom AC
-    dc_device_info_t device2 = {
-        .device_id = 1,
-        .device_name = "Bedroom AC",
-        .is_online = true,
+    if (device_count == 0) {
+        ESP_LOGW(TAG, "No AC devices found, using minimal configuration");
+        // Create a placeholder device for testing
+        dc_device_info_t placeholder_device = {
+            .device_id = 0,
+            .device_name = "No Device",
+            .is_online = false,
         .status = {
             .power = false,
-            .temperature = 25,
+                .temperature = 22,
             .mode = DEVICE_CONTROLLER_MODE_AUTO,
             .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_LOW
         }
     };
     
-    ret = dc_state_machine_set_device_info(1, &device2);
+        ret = dc_state_machine_set_device_info(0, &placeholder_device);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set device 2 info: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "Failed to set placeholder device info: %s", esp_err_to_name(ret));
         return ret;
-    }
-    
-    // Device 3: Kitchen AC
-    dc_device_info_t device3 = {
-        .device_id = 2,
-        .device_name = "Kitchen AC",
-        .is_online = false,
-        .status = {
-            .power = false,
-            .temperature = 26,
-            .mode = DEVICE_CONTROLLER_MODE_FAN,
-            .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_HIGH
         }
-    };
-    
-    ret = dc_state_machine_set_device_info(2, &device3);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set device 3 info: %s", esp_err_to_name(ret));
-        return ret;
+        
+        ESP_LOGI(TAG, "Initialized with placeholder device (no real devices connected)");
+        return ESP_OK;
     }
     
-    ESP_LOGI(TAG, "Initialized 3 devices successfully (Living Room, Bedroom, Kitchen)");
+    // Get device list from AC control
+    ac_device_info_t ac_devices[DEVICE_CONTROLLER_MAX_DEVICES];
+    uint8_t actual_count = ac_get_device_list(ac_devices, DEVICE_CONTROLLER_MAX_DEVICES);
+    
+    ESP_LOGI(TAG, "AC control returned %d device records", actual_count);
+    
+    // Debug: Print all received device information
+    for (uint8_t i = 0; i < actual_count; i++) {
+        ESP_LOGI(TAG, "Device %d Debug Info:", i);
+        ESP_LOGI(TAG, "  Address: 0x%04X", ac_devices[i].addr);
+        ESP_LOGI(TAG, "  Online: %s", ac_devices[i].is_online ? "YES" : "NO");
+        ESP_LOGI(TAG, "  Raw name length: %d", strlen(ac_devices[i].device_name));
+        
+        // Print device name character by character to debug encoding issues
+        ESP_LOGI(TAG, "  Raw name bytes:");
+        for (int j = 0; j < 16 && ac_devices[i].device_name[j] != '\0'; j++) {
+            ESP_LOGI(TAG, "    [%d]: 0x%02X ('%c')", j, 
+                    (unsigned char)ac_devices[i].device_name[j],
+                    isprint((unsigned char)ac_devices[i].device_name[j]) ? ac_devices[i].device_name[j] : '?');
+        }
+        ESP_LOGI(TAG, "  Name string: \"%s\"", ac_devices[i].device_name);
+    }
+    
+    // Convert AC device info to device controller format
+    for (uint8_t i = 0; i < actual_count; i++) {
+        // Use device name from AC control, or create default name
+        const char *device_name;
+        static char default_names[DEVICE_CONTROLLER_MAX_DEVICES][32];
+        static char cleaned_names[DEVICE_CONTROLLER_MAX_DEVICES][32];
+        
+        // Check if device has a valid name
+        bool has_valid_name = false;
+        if (strlen(ac_devices[i].device_name) > 0) {
+            // Check if name contains printable characters
+            bool is_printable = true;
+            for (int j = 0; j < strlen(ac_devices[i].device_name); j++) {
+                if (!isprint((unsigned char)ac_devices[i].device_name[j])) {
+                    is_printable = false;
+                    break;
+                }
+            }
+            
+            if (is_printable) {
+                // Copy and clean the name (remove any trailing spaces/nulls)
+                strncpy(cleaned_names[i], ac_devices[i].device_name, sizeof(cleaned_names[i]) - 1);
+                cleaned_names[i][sizeof(cleaned_names[i]) - 1] = '\0';
+                
+                // Trim trailing spaces
+                int len = strlen(cleaned_names[i]);
+                while (len > 0 && isspace((unsigned char)cleaned_names[i][len - 1])) {
+                    cleaned_names[i][len - 1] = '\0';
+                    len--;
+                }
+                
+                if (strlen(cleaned_names[i]) > 0) {
+                    device_name = cleaned_names[i];
+                    has_valid_name = true;
+                    ESP_LOGI(TAG, "Using cleaned device name: \"%s\"", device_name);
+                }
+            }
+        }
+        
+        if (!has_valid_name) {
+            snprintf(default_names[i], sizeof(default_names[i]), "AC Device %d", i + 1);
+            device_name = default_names[i];
+            ESP_LOGW(TAG, "Device %d has invalid/empty name, using default: \"%s\"", i, device_name);
+        }
+        
+        dc_device_info_t dc_device = {
+            .device_id = i,
+            .device_name = device_name,
+            .is_online = ac_devices[i].is_online,
+            .status = {
+                .power = ac_devices[i].power_state,
+                .temperature = ac_devices[i].temperature,
+                .mode = ac_devices[i].mode,
+                .fan_speed = ac_devices[i].fan_speed
+            }
+        };
+        
+        ret = dc_state_machine_set_device_info(i, &dc_device);
+    if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set device %d info: %s", i, esp_err_to_name(ret));
+        return ret;
+        }
+        
+        ESP_LOGI(TAG, "Initialized device %d: \"%s\" (0x%04X) - %s", 
+                i, device_name, ac_devices[i].addr,
+                dc_device.is_online ? "ONLINE" : "OFFLINE");
+    }
+    
+    ESP_LOGI(TAG, "Successfully initialized %d devices from AC control", actual_count);
+    ESP_LOGI(TAG, "=== End Device Initialization Debug ===");
     return ESP_OK;
 }
 
@@ -426,7 +715,21 @@ esp_err_t device_controller_init(void)
     
     esp_err_t ret;
     
-    // Initialize UI integration first
+    // Initialize AC client first
+    ret = ac_client_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize AC client: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Register AC control callbacks
+    ac_client_register_callbacks(ac_device_status_callback, 
+                                ac_device_online_callback,
+                                ac_device_provisioned_callback);
+    
+    ESP_LOGI(TAG, "AC client initialized and callbacks registered");
+    
+    // Initialize UI integration
     dc_ui_callbacks_t ui_callbacks = {
         .on_screen_changed = ui_screen_changed_handler,
         .on_boot_complete = ui_boot_complete_handler
@@ -463,7 +766,7 @@ esp_err_t device_controller_init(void)
         return ret;
     }
     
-    // Initialize multiple devices with different configurations
+    // Initialize devices from AC control (this will be called again after boot complete)
     ret = initialize_multiple_devices();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize multiple devices: %s", esp_err_to_name(ret));
@@ -550,5 +853,38 @@ esp_err_t device_controller_deinit(void)
     s_initialized = false;
     ESP_LOGI(TAG, "Device controller deinitialized");
     
+    return ESP_OK;
+}
+
+esp_err_t device_controller_refresh_device_status(uint8_t device_index)
+{
+    if (!s_initialized) {
+        ESP_LOGE(TAG, "Device controller not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    uint16_t device_addr = get_device_addr_by_index(device_index);
+    if (device_addr == ESP_BLE_MESH_ADDR_UNASSIGNED) {
+        ESP_LOGE(TAG, "Invalid device index %d", device_index);
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (!ac_is_server_online(device_addr)) {
+        ESP_LOGW(TAG, "Device 0x%04X is offline, cannot refresh status", device_addr);
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    sync_single_device_status(device_addr);
+    return ESP_OK;
+}
+
+esp_err_t device_controller_refresh_all_devices_status(void)
+{
+    if (!s_initialized) {
+        ESP_LOGE(TAG, "Device controller not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    sync_all_devices_status();
     return ESP_OK;
 } 

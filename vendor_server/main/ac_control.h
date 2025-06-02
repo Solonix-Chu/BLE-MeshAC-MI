@@ -162,6 +162,34 @@ void ac_server_handle_heartbeat_timeout(void);
  */
 void ac_server_handle_heartbeat_ack(void);
 
+/**
+ * @brief Initialize NVS storage for AC state
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_nvs_init(void);
+
+/**
+ * @brief Save AC state to NVS flash storage
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_save_state_to_flash(void);
+
+/**
+ * @brief Load AC state from NVS flash storage
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_load_state_from_flash(void);
+
+/**
+ * @brief Clear AC state from NVS flash storage
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t ac_server_clear_state_from_flash(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -17,6 +17,8 @@
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "ui_update.h"  // For UI update functions
+#include "nvs_flash.h"
+#include "nvs.h"
 
 #define TAG_AC_CTRL "AC_SERVER_CTRL"
 
@@ -48,7 +50,7 @@ static esp_ble_mesh_model_t root_models[] = {
 };
 
 /* 心跳包配置 */
-#define HEARTBEAT_INTERVAL_MS    5000   /* 5秒发送一次心跳包 */
+#define HEARTBEAT_INTERVAL_MS    10000   /* 10秒发送一次心跳包 */
 #define MAX_HEARTBEAT_TIMEOUTS   3      /* 最大超时次数 */
 
 /* 心跳包状态管理 */
@@ -112,13 +114,22 @@ static esp_ble_mesh_prov_t provision = {
     .uuid = dev_uuid,
 };
 
+/* NVS namespace for AC state storage */
+#define AC_NVS_NAMESPACE "ac_state"
+
+/* NVS keys for AC state */
+#define AC_NVS_KEY_POWER      "power"
+#define AC_NVS_KEY_TEMP       "temp"
+#define AC_NVS_KEY_MODE       "mode"
+#define AC_NVS_KEY_FAN_SPEED  "fan_speed"
+
 /* BLE Mesh Callback functions (Moved from main.c and made static) */
 
 static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32_t iv_index)
 {
     ESP_LOGI(TAG_AC_CTRL, "Provisioning complete: net_idx 0x%03x, addr 0x%04x", net_idx, addr);
     ESP_LOGI(TAG_AC_CTRL, "flags 0x%02x, iv_index 0x%08" PRIx32, flags, iv_index);
-    board_led_operation(LED_STATE_SUCCESS);
+    // board_led_operation(LED_STATE_SUCCESS);
     ESP_LOGI(TAG_AC_CTRL, "Waiting for app key binding before starting heartbeat");
 }
 
@@ -188,6 +199,7 @@ static void example_ble_mesh_config_server_cb(esp_ble_mesh_cfg_server_cb_event_t
                     ESP_LOGI(TAG_AC_CTRL, "Heartbeat mechanism started for client 0x%04x", provisioner_addr);
                 }
             }
+            board_led_operation(LED_STATE_SUCCESS);
             break;
         default:
             break;
@@ -336,6 +348,21 @@ esp_err_t ac_server_init(void)
 
     ESP_LOGI(TAG_AC_CTRL, "Initializing AC BLE Mesh Server Module...");
 
+    // Initialize NVS for state storage
+    err = ac_server_nvs_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Failed to initialize NVS for AC state storage (err %d)", err);
+        board_led_operation(LED_STATE_ERROR);
+        return err;
+    }
+
+    // Load AC state from flash
+    err = ac_server_load_state_from_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to load AC state from flash (err %d), using defaults", err);
+        // This is not a fatal error, we can continue with default values
+    }
+
     ble_mesh_get_dev_uuid(dev_uuid);
 
     esp_ble_mesh_register_prov_callback(example_ble_mesh_provisioning_cb);
@@ -375,6 +402,13 @@ esp_err_t ac_server_set_power(uint8_t power_state)
     ac_state.power = power_state;
     ESP_LOGI(TAG_AC_CTRL, "空调电源设置为: %s", power_state == AC_POWER_ON ? "开启" : "关闭");
     ui_update_ac_status();
+    
+    // Save state to flash
+    esp_err_t err = ac_server_save_state_to_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to save power state to flash (err %d)", err);
+    }
+    
     return ESP_OK;
 }
 
@@ -390,6 +424,13 @@ esp_err_t ac_server_set_temperature(uint8_t temperature)
     ac_state.temperature = temperature;
     ESP_LOGI(TAG_AC_CTRL, "空调温度设置为: %d°C", temperature);
     ui_update_ac_status();
+    
+    // Save state to flash
+    esp_err_t err = ac_server_save_state_to_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to save temperature state to flash (err %d)", err);
+    }
+    
     return ESP_OK;
 }
 
@@ -414,6 +455,13 @@ esp_err_t ac_server_set_mode(uint8_t mode)
     }
     ESP_LOGI(TAG_AC_CTRL, "空调模式设置为: %s", mode_str);
     ui_update_ac_status();
+    
+    // Save state to flash
+    esp_err_t err = ac_server_save_state_to_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to save mode state to flash (err %d)", err);
+    }
+    
     return ESP_OK;
 }
 
@@ -436,6 +484,13 @@ esp_err_t ac_server_set_fan_speed(uint8_t fan_speed)
     }
     ESP_LOGI(TAG_AC_CTRL, "空调风速设置为: %s", speed_str);
     ui_update_ac_status();
+    
+    // Save state to flash
+    esp_err_t err = ac_server_save_state_to_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to save fan speed state to flash (err %d)", err);
+    }
+    
     return ESP_OK;
 }
 
@@ -445,16 +500,42 @@ esp_err_t ac_server_set_fan_speed(uint8_t fan_speed)
 esp_err_t ac_server_set_all(uint8_t power, uint8_t temperature, uint8_t mode, uint8_t fan_speed)
 {
     esp_err_t err;
-    err = ac_server_set_power(power);
-    if (err != ESP_OK) return err;
-    err = ac_server_set_temperature(temperature);
-    if (err != ESP_OK) return err;
-    err = ac_server_set_mode(mode);
-    if (err != ESP_OK) return err;
-    err = ac_server_set_fan_speed(fan_speed);
-    if (err != ESP_OK) return err;
-    ESP_LOGI(TAG_AC_CTRL, "空调所有参数设置完成");
+    
+    // Validate all parameters first
+    if (power > AC_POWER_ON) {
+        ESP_LOGE(TAG_AC_CTRL, "无效的电源状态值: %d", power);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (temperature < AC_TEMP_MIN || temperature > AC_TEMP_MAX) {
+        ESP_LOGE(TAG_AC_CTRL, "无效的温度值: %d，有效范围: %d-%d", temperature, AC_TEMP_MIN, AC_TEMP_MAX);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (mode > AC_MODE_AUTO) {
+        ESP_LOGE(TAG_AC_CTRL, "无效的模式值: %d", mode);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (fan_speed > AC_FAN_SPEED_HIGH) {
+        ESP_LOGE(TAG_AC_CTRL, "无效的风速值: %d", fan_speed);
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Set all parameters directly without saving each time
+    ac_state.power = power;
+    ac_state.temperature = temperature;
+    ac_state.mode = mode;
+    ac_state.fan_speed = fan_speed;
+    
+    ESP_LOGI(TAG_AC_CTRL, "空调所有参数设置完成: Power=%d, Temp=%d, Mode=%d, Fan=%d", 
+             power, temperature, mode, fan_speed);
+    
     ui_update_ac_status();
+    
+    // Save all state to flash at once
+    err = ac_server_save_state_to_flash();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to save all AC state to flash (err %d)", err);
+    }
+    
     return ESP_OK;
 }
 
@@ -628,4 +709,214 @@ void ac_server_handle_heartbeat_ack(void)
     } else {
         ESP_LOGW(TAG_AC_CTRL, "Heartbeat ACK received but heartbeat not active/connected for client 0x%04x", heartbeat_state.client_addr);
     }
+}
+
+/**
+ * @brief Initialize NVS storage for AC state
+ */
+esp_err_t ac_server_nvs_init(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG_AC_CTRL, "NVS partition was truncated and needs to be erased");
+        // NVS partition was truncated and needs to be erased
+        // Retry nvs_flash_init
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG_AC_CTRL, "NVS initialized successfully for AC state storage");
+    } else {
+        ESP_LOGE(TAG_AC_CTRL, "Failed to initialize NVS (err %d)", err);
+    }
+    
+    return err;
+}
+
+/**
+ * @brief Save AC state to NVS flash storage
+ */
+esp_err_t ac_server_save_state_to_flash(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    // Open NVS handle
+    err = nvs_open(AC_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error opening NVS handle for saving: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Save power state
+    err = nvs_set_u8(nvs_handle, AC_NVS_KEY_POWER, ac_state.power);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error saving power state: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Save temperature
+    err = nvs_set_u8(nvs_handle, AC_NVS_KEY_TEMP, ac_state.temperature);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error saving temperature: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Save mode
+    err = nvs_set_u8(nvs_handle, AC_NVS_KEY_MODE, ac_state.mode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error saving mode: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Save fan speed
+    err = nvs_set_u8(nvs_handle, AC_NVS_KEY_FAN_SPEED, ac_state.fan_speed);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error saving fan speed: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Commit changes
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error committing NVS changes: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Close NVS handle
+    nvs_close(nvs_handle);
+
+    ESP_LOGI(TAG_AC_CTRL, "AC state saved to flash: Power=%d, Temp=%d, Mode=%d, Fan=%d", 
+             ac_state.power, ac_state.temperature, ac_state.mode, ac_state.fan_speed);
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Load AC state from NVS flash storage
+ */
+esp_err_t ac_server_load_state_from_flash(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    size_t required_size = 0;
+
+    // Open NVS handle
+    err = nvs_open(AC_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG_AC_CTRL, "AC state namespace not found in NVS, using default values");
+            return ESP_OK;  // This is OK, we'll use default values
+        }
+        ESP_LOGE(TAG_AC_CTRL, "Error opening NVS handle for loading: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Load power state
+    uint8_t power_value = ac_state.power;  // Default value
+    err = nvs_get_u8(nvs_handle, AC_NVS_KEY_POWER, &power_value);
+    if (err == ESP_OK) {
+        if (power_value <= AC_POWER_ON) {
+            ac_state.power = power_value;
+        } else {
+            ESP_LOGW(TAG_AC_CTRL, "Invalid power value %d from NVS, using default", power_value);
+        }
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG_AC_CTRL, "Error loading power state: %s", esp_err_to_name(err));
+    }
+
+    // Load temperature
+    uint8_t temp_value = ac_state.temperature;  // Default value
+    err = nvs_get_u8(nvs_handle, AC_NVS_KEY_TEMP, &temp_value);
+    if (err == ESP_OK) {
+        if (temp_value >= AC_TEMP_MIN && temp_value <= AC_TEMP_MAX) {
+            ac_state.temperature = temp_value;
+        } else {
+            ESP_LOGW(TAG_AC_CTRL, "Invalid temperature value %d from NVS, using default", temp_value);
+        }
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG_AC_CTRL, "Error loading temperature: %s", esp_err_to_name(err));
+    }
+
+    // Load mode
+    uint8_t mode_value = ac_state.mode;  // Default value
+    err = nvs_get_u8(nvs_handle, AC_NVS_KEY_MODE, &mode_value);
+    if (err == ESP_OK) {
+        if (mode_value <= AC_MODE_AUTO) {
+            ac_state.mode = mode_value;
+        } else {
+            ESP_LOGW(TAG_AC_CTRL, "Invalid mode value %d from NVS, using default", mode_value);
+        }
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG_AC_CTRL, "Error loading mode: %s", esp_err_to_name(err));
+    }
+
+    // Load fan speed
+    uint8_t fan_speed_value = ac_state.fan_speed;  // Default value
+    err = nvs_get_u8(nvs_handle, AC_NVS_KEY_FAN_SPEED, &fan_speed_value);
+    if (err == ESP_OK) {
+        if (fan_speed_value <= AC_FAN_SPEED_HIGH) {
+            ac_state.fan_speed = fan_speed_value;
+        } else {
+            ESP_LOGW(TAG_AC_CTRL, "Invalid fan speed value %d from NVS, using default", fan_speed_value);
+        }
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG_AC_CTRL, "Error loading fan speed: %s", esp_err_to_name(err));
+    }
+
+    // Close NVS handle
+    nvs_close(nvs_handle);
+
+    ESP_LOGI(TAG_AC_CTRL, "AC state loaded from flash: Power=%d, Temp=%d, Mode=%d, Fan=%d", 
+             ac_state.power, ac_state.temperature, ac_state.mode, ac_state.fan_speed);
+
+    // Update UI with loaded state
+    ui_update_ac_status();
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Clear AC state from NVS flash storage
+ */
+esp_err_t ac_server_clear_state_from_flash(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    // Open NVS handle
+    err = nvs_open(AC_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error opening NVS handle for clearing: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Erase all keys in the namespace
+    err = nvs_erase_all(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error erasing AC state from NVS: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Commit changes
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Error committing NVS erase: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    // Close NVS handle
+    nvs_close(nvs_handle);
+
+    ESP_LOGI(TAG_AC_CTRL, "AC state cleared from flash storage");
+
+    return ESP_OK;
 }
