@@ -1,0 +1,236 @@
+<mxfile host="draw.io" modified="2024-01-15T00:00:00.000Z" agent="5.0" etag="xyz" version="22.1.16" type="device">
+  <diagram name="消息流程" id="message-flow">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <!-- 标题 -->
+        <mxCell id="title" value="BLE Mesh 消息通信流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="420" y="30" width="280" height="40" as="geometry"/>
+        </mxCell>
+        
+        <!-- 设备节点 -->
+        <mxCell id="controller" value="遥控器" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="150" width="80" height="50" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="relay1" value="中继节点1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#FF9800;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="150" width="80" height="50" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="relay2" value="中继节点2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#FF9800;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="150" width="80" height="50" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="receiver" value="接收器" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#D32F2F;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="150" width="80" height="50" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="ac-device" value="空调设备" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="880" y="150" width="80" height="50" as="geometry"/>
+        </mxCell>
+        
+        <!-- 消息流程步骤 -->
+        <mxCell id="step1" value="1. 用户操作" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#2196F3;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="250" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="step2" value="2. 指令封装" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#2196F3;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="290" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="step3" value="3. Mesh传输" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9800;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="260" y="250" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="step4" value="4. 多跳路由" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9800;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="460" y="250" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="step5" value="5. 指令解析" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#F44336;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="250" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="step6" value="6. 红外发送" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#F3E5F5;strokeColor="#9C27B0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="860" y="250" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <!-- 消息传输箭头 -->
+        <mxCell id="msg1" value="控制指令" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#1976D2;fontSize=10;" edge="1" parent="1" source="controller" target="relay1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="190" y="175" as="sourcePoint"/>
+            <mxPoint x="270" y="175" as="targetPoint"/>
+            <mxOffset x="0" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="msg2" value="Mesh路由" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#FF9800;fontSize=10;" edge="1" parent="1" source="relay1" target="relay2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="370" y="175" as="sourcePoint"/>
+            <mxPoint x="470" y="175" as="targetPoint"/>
+            <mxOffset x="0" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="msg3" value="目标传递" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#FF9800;fontSize=10;" edge="1" parent="1" source="relay2" target="receiver">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="570" y="175" as="sourcePoint"/>
+            <mxPoint x="670" y="175" as="targetPoint"/>
+            <mxOffset x="0" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="msg4" value="红外控制" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#E91E63;fontSize=10;" edge="1" parent="1" source="receiver" target="ac-device">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="770" y="175" as="sourcePoint"/>
+            <mxPoint x="870" y="175" as="targetPoint"/>
+            <mxOffset x="0" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- 状态反馈流程 -->
+        <mxCell id="feedback-title" value="状态反馈流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#4CAF50;" vertex="1" parent="1">
+          <mxGeometry x="450" y="360" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="fb-step1" value="状态检测" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E8;strokeColor=#4CAF50;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="860" y="410" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="fb-step2" value="状态上报" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#F44336;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="410" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="fb-step3" value="网络回传" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF9800;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="460" y="410" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="fb-step4" value="状态同步" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#2196F3;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="410" width="120" height="30" as="geometry"/>
+        </mxCell>
+        
+        <!-- 反馈箭头 -->
+        <mxCell id="fb-msg1" value="状态数据" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#4CAF50;fontSize=10;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="850" y="195" as="sourcePoint"/>
+            <mxPoint x="770" y="195" as="targetPoint"/>
+            <mxOffset x="0" y="10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="fb-msg2" value="Mesh回传" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#4CAF50;fontSize=10;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="670" y="195" as="sourcePoint"/>
+            <mxPoint x="570" y="195" as="targetPoint"/>
+            <mxOffset x="0" y="10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="fb-msg3" value="状态路由" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#4CAF50;fontSize=10;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="470" y="195" as="sourcePoint"/>
+            <mxPoint x="370" y="195" as="targetPoint"/>
+            <mxOffset x="0" y="10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="fb-msg4" value="界面更新" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#4CAF50;fontSize=10;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="270" y="195" as="sourcePoint"/>
+            <mxPoint x="190" y="195" as="targetPoint"/>
+            <mxOffset x="0" y="10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- 时序标识 -->
+        <mxCell id="time1" value="t1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="130" width="25" height="20" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="time2" value="t2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="420" y="130" width="25" height="20" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="time3" value="t3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="130" width="25" height="20" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="time4" value="t4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="820" y="130" width="25" height="20" as="geometry"/>
+        </mxCell>
+        
+        <!-- 消息类型说明 -->
+        <mxCell id="msg-types" value="消息类型" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#FFA000;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="500" width="860" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="control-msg" value="控制消息" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#2196F3;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="120" y="550" width="120" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="control-detail" value="• 开关机指令&#xa;• 温度调节&#xa;• 模式切换&#xa;• 定时设置" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="125" y="560" width="110" height="40" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="status-msg" value="状态消息" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E8;strokeColor=#4CAF50;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="550" width="120" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="status-detail" value="• 运行状态&#xa;• 当前温度&#xa;• 工作模式&#xa;• 故障信息" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="285" y="560" width="110" height="40" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="heartbeat-msg" value="心跳消息" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#FFF3E0;strokeColor="#FF9800;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="550" width="120" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="heartbeat-detail" value="• 设备在线检测&#xa;• 网络连接状态&#xa;• 定期健康检查&#xa;• 自动重连机制" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="445" y="560" width="110" height="40" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="config-msg" value="配置消息" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#FFEBEE;strokeColor="#F44336;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="550" width="120" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="config-detail" value="• 设备入网配置&#xa;• 分组管理&#xa;• 安全密钥更新&#xa;• 参数设置" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="605" y="560" width="110" height="40" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="group-msg" value="组播消息" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#F3E5F5;strokeColor="#9C27B0;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="550" width="120" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="group-detail" value="• 分组控制指令&#xa;• 场景模式切换&#xa;• 批量操作&#xa;• 楼层控制" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="765" y="560" width="110" height="40" as="geometry"/>
+        </mxCell>
+        
+        <!-- 性能指标 -->
+        <mxCell id="performance" value="性能指标" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#E1F5FE;strokeColor="#0277BD;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="650" width="860" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="perf-latency" value="延迟：< 100ms" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#E8EAF6;strokeColor="#3F51B5;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="120" y="700" width="150" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="perf-reliability" value="可靠性：> 99%" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#E8F5E8;strokeColor="#4CAF50;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="700" width="150" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="perf-range" value="距离：数公里" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#FFF3E0;strokeColor="#FF9800;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="700" width="150" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="perf-capacity" value="容量：32767设备" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#FFEBEE;strokeColor="#F44336;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="660" y="700" width="150" height="30" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="perf-power" value="功耗：优化至μA级" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#F3E5F5;strokeColor="#9C27B0;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="840" y="700" width="150" height="30" as="geometry"/>
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile> 

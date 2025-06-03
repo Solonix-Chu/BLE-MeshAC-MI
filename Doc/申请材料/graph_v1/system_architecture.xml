@@ -1,0 +1,267 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2024-05-25T00:00:00.000Z" agent="draw.io" etag="xxx" version="24.4.0">
+  <diagram name="系统整体架构图" id="system-architecture">
+    <mxGraphModel dx="1422" dy="754" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- 标题 -->
+        <mxCell id="title" value="基于BLE Mesh的智能空调遥控系统架构" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="400" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- 云端服务层 -->
+        <mxCell id="cloud-layer" value="云端服务层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="80" width="1070" height="60" as="geometry" />
+        </mxCell>
+        
+        <!-- 云端组件 -->
+        <mxCell id="cloud-analytics" value="数据分析" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="100" y="95" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="cloud-remote" value="远程控制" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="200" y="95" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="cloud-monitor" value="设备监控" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="300" y="95" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="cloud-maintenance" value="故障预警" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="400" y="95" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- 网关设备 -->
+        <mxCell id="gateway" value="BLE-WiFi网关" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="180" width="120" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- BLE Mesh网络层 -->
+        <mxCell id="mesh-network" value="BLE Mesh网络层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="280" width="1070" height="350" as="geometry" />
+        </mxCell>
+        
+        <!-- 遥控器 -->
+        <mxCell id="controller" value="智能遥控器&#xa;(BLE Mesh Client)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="320" width="120" height="120" as="geometry" />
+        </mxCell>
+        
+        <!-- 遥控器组件 -->
+        <mxCell id="controller-display" value="LVGL显示屏" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="350" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="controller-touch" value="触摸控制" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="375" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="controller-mesh" value="BLE Mesh" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="400" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- 空调接收器1 -->
+        <mxCell id="ac1" value="空调1接收器&#xa;(BLE Mesh Server)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="350" y="320" width="120" height="120" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac1-ir" value="红外发射" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="350" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac1-temp" value="温度传感器" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="375" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac1-mesh" value="BLE Mesh" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="400" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- 空调接收器2 -->
+        <mxCell id="ac2" value="空调2接收器&#xa;(BLE Mesh Server)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="550" y="320" width="120" height="120" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac2-ir" value="红外发射" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="350" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac2-temp" value="温度传感器" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="375" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac2-mesh" value="BLE Mesh" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="400" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- 空调接收器3 -->
+        <mxCell id="ac3" value="空调3接收器&#xa;(BLE Mesh Server)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="750" y="320" width="120" height="120" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac3-ir" value="红外发射" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="760" y="350" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac3-temp" value="温度传感器" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="760" y="375" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ac3-mesh" value="BLE Mesh" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="760" y="400" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- 中继节点 -->
+        <mxCell id="relay1" value="中继节点1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e6f7ff;strokeColor=#1890ff;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="250" y="490" width="80" height="50" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="relay2" value="中继节点2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e6f7ff;strokeColor=#1890ff;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="450" y="490" width="80" height="50" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="relay3" value="中继节点3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e6f7ff;strokeColor=#1890ff;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="650" y="490" width="80" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- 扩展节点 -->
+        <mxCell id="more-devices" value="...更多设备..." style="ellipse;whiteSpace=wrap;html=1;fillColor=#f0f0f0;strokeColor=#808080;fontSize=11;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="950" y="370" width="100" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- 实际空调设备 -->
+        <mxCell id="real-ac1" value="空调设备1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffcccc;strokeColor=#ff0000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="330" y="680" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="real-ac2" value="空调设备2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffcccc;strokeColor=#ff0000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="530" y="680" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="real-ac3" value="空调设备3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffcccc;strokeColor=#ff0000;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="730" y="680" width="80" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- 连接线 -->
+        <!-- 云端到网关 -->
+        <mxCell id="edge1" edge="1" parent="1" source="cloud-layer" target="gateway">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        
+        <!-- 网关到Mesh网络 -->
+        <mxCell id="edge2" edge="1" parent="1" source="gateway" target="mesh-network">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        
+        <!-- BLE Mesh连接 -->
+        <mxCell id="mesh-edge1" value="BLE Mesh" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="controller" target="ac1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="230" y="380" as="sourcePoint" />
+            <mxPoint x="340" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge2" value="BLE Mesh" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="controller" target="ac2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="230" y="380" as="sourcePoint" />
+            <mxPoint x="540" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge3" value="BLE Mesh" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="ac1" target="ac2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="470" y="380" as="sourcePoint" />
+            <mxPoint x="540" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge4" value="BLE Mesh" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="ac2" target="ac3">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="670" y="380" as="sourcePoint" />
+            <mxPoint x="740" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge5" value="中继" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=1;strokeColor=#1890ff;dashed=1;" edge="1" parent="1" source="relay1" target="ac1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="290" y="480" as="sourcePoint" />
+            <mxPoint x="390" y="450" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge6" value="中继" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=1;strokeColor=#1890ff;dashed=1;" edge="1" parent="1" source="relay2" target="ac2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="490" y="480" as="sourcePoint" />
+            <mxPoint x="590" y="450" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="mesh-edge7" value="中继" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=1;strokeColor=#1890ff;dashed=1;" edge="1" parent="1" source="relay3" target="ac3">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="690" y="480" as="sourcePoint" />
+            <mxPoint x="790" y="450" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- 红外连接 -->
+        <mxCell id="ir-edge1" value="红外控制" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#ff0000;" edge="1" parent="1" source="ac1" target="real-ac1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="400" y="450" as="sourcePoint" />
+            <mxPoint x="370" y="670" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="ir-edge2" value="红外控制" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#ff0000;" edge="1" parent="1" source="ac2" target="real-ac2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="600" y="450" as="sourcePoint" />
+            <mxPoint x="570" y="670" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="ir-edge3" value="红外控制" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#ff0000;" edge="1" parent="1" source="ac3" target="real-ac3">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="800" y="450" as="sourcePoint" />
+            <mxPoint x="770" y="670" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- 图例 -->
+        <mxCell id="legend" value="图例" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="480" width="40" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-mesh" value="BLE Mesh通信" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="900" y="510" as="sourcePoint" />
+            <mxPoint x="950" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="legend-relay" value="中继连接" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeWidth=1;strokeColor=#1890ff;dashed=1;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="900" y="530" as="sourcePoint" />
+            <mxPoint x="950" y="530" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="legend-ir" value="红外控制" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#ff0000;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="900" y="550" as="sourcePoint" />
+            <mxPoint x="950" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- 技术特性标注 -->
+        <mxCell id="feature1" value="• 支持100+设备同时在线&#xa;• 网络覆盖范围500m+&#xa;• 自动配网与设备发现&#xa;• 双向状态同步&#xa;• 多跳中继扩展网络" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="50" y="720" width="200" height="100" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="feature2" value="• AES-128网络加密&#xa;• 设备身份认证&#xa;• 网络自愈能力&#xa;• 低功耗设计&#xa;• Flash状态存储" style="text;html=1;strokeColor=#d79b00;fillColor=#ffe6cc;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="720" width="200" height="100" as="geometry" />
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile> 
