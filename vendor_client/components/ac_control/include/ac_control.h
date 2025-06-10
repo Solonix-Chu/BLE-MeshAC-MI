@@ -12,35 +12,8 @@ extern "C" {
 #include <stdbool.h>
 #include "esp_ble_mesh_defs.h" // Added for BLE types
 
-/* ==================== 消息队列相关定义 ==================== */
-#define AC_MSG_QUEUE_SIZE 16  /* 消息队列最大长度 */
-
-/* BLE Mesh消息类型 */
-typedef enum {
-    AC_MSG_TYPE_SET_POWER,
-    AC_MSG_TYPE_GET_POWER,
-    AC_MSG_TYPE_SET_TEMPERATURE,
-    AC_MSG_TYPE_GET_TEMPERATURE,
-    AC_MSG_TYPE_SET_MODE,
-    AC_MSG_TYPE_GET_MODE,
-    AC_MSG_TYPE_SET_FAN_SPEED,
-    AC_MSG_TYPE_GET_FAN_SPEED,
-} ac_msg_type_t;
-
-/* 消息队列项结构 */
-typedef struct {
-    ac_msg_type_t msg_type;     /* 消息类型 */
-    uint16_t server_addr;       /* 目标服务器地址 */
-    uint8_t value;              /* 消息值（对于GET类型消息无效） */
-    uint32_t timestamp;         /* 消息时间戳 */
-} ac_msg_queue_item_t;
-
-/* 消息发送状态 */
-typedef enum {
-    AC_SEND_STATE_IDLE,         /* 空闲状态，可以发送消息 */
-    AC_SEND_STATE_SENDING,      /* 正在发送消息 */
-    AC_SEND_STATE_WAITING_ACK,  /* 等待响应 */
-} ac_send_state_t;
+/* ==================== 消息队列相关接口 ==================== */
+#include "ac_msg_queue.h"  /* 使用独立的消息队列模块 */
 
 /**
  * @brief 获取当前消息发送状态

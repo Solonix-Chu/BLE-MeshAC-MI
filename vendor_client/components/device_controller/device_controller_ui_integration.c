@@ -54,9 +54,17 @@ static void boot_timer_callback(void *arg)
 // Message timer callback - hide temporary message
 static void message_timer_callback(void *arg)
 {
+    // Use a safer approach - don't delete LVGL objects from timer callback
+    // Instead, just hide the message and clean up timer
     if (s_ui_state.message_label) {
-        lv_obj_del(s_ui_state.message_label);
-        s_ui_state.message_label = NULL;
+        // Hide the label instead of deleting it
+        lv_obj_add_flag(s_ui_state.message_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    // Clean up timer
+    if (s_ui_state.message_timer) {
+        esp_timer_delete(s_ui_state.message_timer);
+        s_ui_state.message_timer = NULL;
     }
 }
 
@@ -771,6 +779,13 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
         return ESP_ERR_INVALID_ARG;
     }
     
+    // Stop existing timer first to prevent callback conflicts
+    if (s_ui_state.message_timer) {
+        esp_timer_stop(s_ui_state.message_timer);
+        esp_timer_delete(s_ui_state.message_timer);
+        s_ui_state.message_timer = NULL;
+    }
+    
     // Remove existing message if any
     if (s_ui_state.message_label) {
         lv_obj_del(s_ui_state.message_label);
@@ -793,10 +808,7 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
             .name = "message_timer"
         };
         
-        if (s_ui_state.message_timer) {
-            esp_timer_stop(s_ui_state.message_timer);
-            esp_timer_delete(s_ui_state.message_timer);
-        }
+        // Timer was already cleaned up above
         
         esp_err_t ret = esp_timer_create(&timer_args, &s_ui_state.message_timer);
         if (ret == ESP_OK) {

@@ -1,6 +1,7 @@
 /* ac_control.c - Air Conditioner Bluetooth Mesh Client Control Implementation */
 
 #include "ac_control.h"
+#include "ac_msg_queue.h"
 #include "esp_log.h"
 #include "esp_ble_mesh_defs.h"
 #include "esp_ble_mesh_common_api.h"
@@ -76,22 +77,12 @@ static ac_device_status_callback_t device_status_cb = NULL;
 static ac_device_online_callback_t device_online_cb = NULL;
 static ac_device_provisioned_callback_t device_provisioned_cb = NULL;
 
-/* ==================== 消息队列相关变量 ==================== */
-static ac_msg_queue_item_t msg_queue[AC_MSG_QUEUE_SIZE];
-static uint8_t queue_head = 0;          /* 队列头指针 */
-static uint8_t queue_tail = 0;          /* 队列尾指针 */
-static uint8_t queue_count = 0;         /* 队列中消息数量 */
-static ac_send_state_t send_state = AC_SEND_STATE_IDLE;
-static ac_msg_queue_item_t current_msg; /* 当前正在发送的消息 */
-
 /* AC状态回调函数 */
 // static ac_status_callback_t ac_status_cb = NULL;
 
-/* 前向声明 - 消息队列管理函数 */
-static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, uint8_t value);
-static esp_err_t _dequeue_message(ac_msg_queue_item_t *msg);
+/* 前向声明 - BLE mesh发送函数 */
 static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg);
-static void _process_next_message(void);
+static void _on_msg_send_complete(const ac_msg_queue_item_t *msg, esp_err_t result);
 
 /* 定义模型操作项 */
 static esp_ble_mesh_model_op_t ac_client_op[] = {
@@ -379,11 +370,9 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                          param->model_send_comp.opcode);
             }
             
-            // 消息发送完成，处理队列中的下一个消息
-            if (send_state == AC_SEND_STATE_SENDING) {
-                send_state = AC_SEND_STATE_IDLE;
-                ESP_LOGD(TAG, "Message send completed, processing next message in queue");
-                _process_next_message();
+            // 通知消息队列发送完成
+            if (ac_msg_queue_get_send_state() == AC_SEND_STATE_SENDING) {
+                ac_msg_queue_send_complete(true);
             }
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
@@ -420,11 +409,9 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                 }
             }
             
-            // 消息发送超时，处理队列中的下一个消息
-            if (send_state == AC_SEND_STATE_SENDING) {
-                send_state = AC_SEND_STATE_IDLE;
-                ESP_LOGD(TAG, "Message send timeout, processing next message in queue");
-                _process_next_message();
+            // 通知消息队列发送超时
+            if (ac_msg_queue_get_send_state() == AC_SEND_STATE_SENDING) {
+                ac_msg_queue_send_timeout();
             }
             break;
         default:
@@ -435,7 +422,7 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
 /* 设置电源状态 */
 esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_SET_POWER, server_addr, power_state);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_SET_POWER, server_addr, power_state);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue power set message: %s", esp_err_to_name(err));
         return err;
@@ -449,7 +436,7 @@ esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state)
 /* 获取电源状态 */
 esp_err_t ac_client_get_power(uint16_t server_addr)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_GET_POWER, server_addr, 0);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_GET_POWER, server_addr, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue power get message: %s", esp_err_to_name(err));
         return err;
@@ -463,7 +450,7 @@ esp_err_t ac_client_get_power(uint16_t server_addr)
 /* 设置温度 */
 esp_err_t ac_client_set_temperature(uint16_t server_addr, uint8_t temperature)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_SET_TEMPERATURE, server_addr, temperature);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_SET_TEMPERATURE, server_addr, temperature);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue temperature set message: %s", esp_err_to_name(err));
         return err;
@@ -477,7 +464,7 @@ esp_err_t ac_client_set_temperature(uint16_t server_addr, uint8_t temperature)
 /* 获取温度状态 */
 esp_err_t ac_client_get_temperature(uint16_t server_addr)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_GET_TEMPERATURE, server_addr, 0);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_GET_TEMPERATURE, server_addr, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue temperature get message: %s", esp_err_to_name(err));
         return err;
@@ -491,7 +478,7 @@ esp_err_t ac_client_get_temperature(uint16_t server_addr)
 /* 设置模式 */
 esp_err_t ac_client_set_mode(uint16_t server_addr, uint8_t mode)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_SET_MODE, server_addr, mode);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_SET_MODE, server_addr, mode);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue mode set message: %s", esp_err_to_name(err));
         return err;
@@ -505,7 +492,7 @@ esp_err_t ac_client_set_mode(uint16_t server_addr, uint8_t mode)
 /* 获取模式状态 */
 esp_err_t ac_client_get_mode(uint16_t server_addr)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_GET_MODE, server_addr, 0);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_GET_MODE, server_addr, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue mode get message: %s", esp_err_to_name(err));
         return err;
@@ -519,7 +506,7 @@ esp_err_t ac_client_get_mode(uint16_t server_addr)
 /* 设置风速 */
 esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_SET_FAN_SPEED, server_addr, fan_speed);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_SET_FAN_SPEED, server_addr, fan_speed);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue fan speed set message: %s", esp_err_to_name(err));
         return err;
@@ -533,7 +520,7 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed)
 /* 获取风速状态 */
 esp_err_t ac_client_get_fan_speed(uint16_t server_addr)
 {
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_GET_FAN_SPEED, server_addr, 0);
+    esp_err_t err = ac_msg_queue_enqueue(AC_MSG_TYPE_GET_FAN_SPEED, server_addr, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enqueue fan speed get message: %s", esp_err_to_name(err));
         return err;
@@ -1325,81 +1312,77 @@ esp_err_t ac_client_init(void)
 {
     esp_err_t err = ESP_OK;
 
-    ac_ble_mesh_init();
+    // 初始化消息队列
+    err = ac_msg_queue_init(_send_ble_mesh_message, _on_msg_send_complete);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize message queue: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 尝试BLE Mesh初始化，如果已经初始化会返回错误，我们可以安全忽略
+    ESP_LOGI(TAG, "Attempting BLE Mesh initialization...");
+    err = ac_ble_mesh_init();
+    
+    // ESP_ERR_INVALID_STATE (-0x103, -259) 对应错误-120在某些版本中
+    if (err == ESP_ERR_INVALID_STATE || err == -120) {
+        // BLE Mesh已经初始化，这是正常情况
+        ESP_LOGI(TAG, "BLE Mesh already initialized (err: %d), this is expected in integrated system", err);
+        
+        // 直接设置我们的模型引用，假设BLE Mesh栈已经正确设置
+        ac_client.model = &vnd_models[0];
+        
+        // 初始化NVS句柄，如果还没有的话
+        if (NVS_HANDLE == 0) {
+            esp_err_t nvs_err = ble_mesh_nvs_open(&NVS_HANDLE);
+            if (nvs_err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to open NVS for AC client (err %d)", nvs_err);
+            }
+        }
+        
+        // 恢复存储的信息
+        ac_ble_mesh_restore_info();
+        
+        ESP_LOGI(TAG, "AC client reusing existing BLE Mesh initialization");
+        err = ESP_OK; // 重置错误码
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize BLE mesh: %s (err: %d)", esp_err_to_name(err), err);
+        return err;
+    } else {
+        ESP_LOGI(TAG, "BLE Mesh initialized successfully by AC client");
+    }
 
     ESP_LOGI(TAG, "AC client initialized");
     return err;
 }
 
-/* ==================== 消息队列管理函数 ==================== */
+/* ==================== 消息队列回调函数 ==================== */
 
-/* 向队列添加消息 */
-static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, uint8_t value) {
-    if (queue_count >= AC_MSG_QUEUE_SIZE) {
-        ESP_LOGW(TAG, "Message queue full, dropping message type %d to 0x%04x", msg_type, server_addr);
-        return ESP_ERR_NO_MEM;
-    }
-    
-    bool queue_was_empty = (queue_count == 0);
-    
-    msg_queue[queue_tail].msg_type = msg_type;
-    msg_queue[queue_tail].server_addr = server_addr;
-    msg_queue[queue_tail].value = value;
-    msg_queue[queue_tail].timestamp = _get_current_timestamp();
-    
-    queue_tail = (queue_tail + 1) % AC_MSG_QUEUE_SIZE;
-    queue_count++;
-    
-    ESP_LOGD(TAG, "Enqueued message type %d to 0x%04x, queue size: %d", msg_type, server_addr, queue_count);
-    
-    // 只有当队列之前为空且当前没有消息在发送时，才立即处理
-    if (queue_was_empty && send_state == AC_SEND_STATE_IDLE) {
-        ESP_LOGD(TAG, "Queue was empty, processing message immediately");
-        _process_next_message();
+/* 消息发送完成回调 */
+static void _on_msg_send_complete(const ac_msg_queue_item_t *msg, esp_err_t result) {
+    if (result == ESP_OK) {
+        ESP_LOGD(TAG, "Message type %d to 0x%04x sent successfully", msg->msg_type, msg->server_addr);
     } else {
-        ESP_LOGD(TAG, "Message queued, waiting for current transmission to complete");
+        ESP_LOGW(TAG, "Message type %d to 0x%04x send failed: %s", 
+                msg->msg_type, msg->server_addr, esp_err_to_name(result));
     }
-    
-    return ESP_OK;
-}
-
-/* 从队列取出消息 */
-static esp_err_t _dequeue_message(ac_msg_queue_item_t *msg) {
-    if (queue_count == 0) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    if (msg) {
-        *msg = msg_queue[queue_head];
-    }
-    
-    queue_head = (queue_head + 1) % AC_MSG_QUEUE_SIZE;
-    queue_count--;
-    
-    ESP_LOGD(TAG, "Dequeued message, remaining queue size: %d", queue_count);
-    return ESP_OK;
 }
 
 /* 清空消息队列 */
 void ac_clear_msg_queue(void) {
-    queue_head = 0;
-    queue_tail = 0;
-    queue_count = 0;
-    send_state = AC_SEND_STATE_IDLE;
-    ESP_LOGI(TAG, "Message queue cleared");
+    ac_msg_queue_clear();
 }
 
 /* 获取队列大小 */
 uint8_t ac_get_queue_size(void) {
-    return queue_count;
+    return ac_msg_queue_get_size();
 }
 
 /* 获取发送状态 */
 ac_send_state_t ac_get_send_state(void) {
-    return send_state;
+    return ac_msg_queue_get_send_state();
 }
 
-/* 实际发送消息的底层函数 */
+/* 实际发送消息的底层函数（作为消息队列的回调） */
 static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
     esp_ble_mesh_client_common_param_t common = {0};
     esp_ble_mesh_msg_ctx_t ctx = {0};
@@ -1411,12 +1394,6 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
     
     if (!msg) {
         return ESP_ERR_INVALID_ARG;
-    }
-    
-    // 检查发送状态
-    if (send_state != AC_SEND_STATE_SENDING) {
-        ESP_LOGE(TAG, "Invalid send state %d when trying to send message", send_state);
-        return ESP_ERR_INVALID_STATE;
     }
     
     // 检查目标设备是否已配置完成
@@ -1511,59 +1488,4 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
     ESP_LOGI(TAG, "Successfully sent BLE mesh message type %d to 0x%04x (opcode: 0x%06" PRIx32 ")", 
              msg->msg_type, msg->server_addr, opcode);
     return ESP_OK;
-}
-
-/* 处理队列中的下一个消息 */
-static void _process_next_message(void) {
-    if (send_state != AC_SEND_STATE_IDLE) {
-        ESP_LOGD(TAG, "Send state not idle (%d), cannot process next message", send_state);
-        return;
-    }
-    
-    if (queue_count == 0) {
-        ESP_LOGD(TAG, "Message queue empty, nothing to process");
-        return;
-    }
-    
-    esp_err_t err = _dequeue_message(&current_msg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to dequeue message: %s", esp_err_to_name(err));
-        return;
-    }
-    
-    ESP_LOGD(TAG, "Processing message type %d to 0x%04x from queue", 
-             current_msg.msg_type, current_msg.server_addr);
-    
-    send_state = AC_SEND_STATE_SENDING;
-    err = _send_ble_mesh_message(&current_msg);
-    
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to send message type %d to 0x%04x: %s", 
-                current_msg.msg_type, current_msg.server_addr, esp_err_to_name(err));
-        
-        send_state = AC_SEND_STATE_IDLE;
-        
-        // 对于BLE Mesh栈繁忙的情况，将消息重新放回队列头部进行重试
-        if (err == ESP_ERR_TIMEOUT) {
-            ESP_LOGI(TAG, "Re-queueing message due to BLE Mesh busy, queue size: %d", queue_count);
-            
-            // 将消息放回队列头部
-            queue_head = (queue_head == 0) ? (AC_MSG_QUEUE_SIZE - 1) : (queue_head - 1);
-            msg_queue[queue_head] = current_msg;
-            queue_count++;
-            
-            ESP_LOGD(TAG, "Message re-queued, will retry after short delay");
-            // 注意：在实际系统中，这里可能需要定时器来延迟重试
-            // 目前先不立即重试，等待下次合适的时机
-            return;
-        } else {
-            // 对于其他错误，丢弃消息并继续处理下一个
-            ESP_LOGE(TAG, "Dropping message due to non-recoverable error: %s", esp_err_to_name(err));
-            // 立即尝试处理下一个消息
-            _process_next_message();
-        }
-    } else {
-        ESP_LOGD(TAG, "Message sent successfully, waiting for completion callback");
-        // 发送成功，等待ESP_BLE_MESH_MODEL_SEND_COMP_EVT或超时事件
-    }
 }
