@@ -12,8 +12,9 @@ extern "C" {
 #include <stdbool.h>
 #include "esp_ble_mesh_defs.h" // Added for BLE types
 
-/* ==================== 消息队列相关接口 ==================== */
+/* ==================== 依赖模块接口 ==================== */
 #include "ac_msg_queue.h"  /* 使用独立的消息队列模块 */
+#include "ac_storage.h"    /* 使用独立的存储模块 */
 
 /**
  * @brief 获取当前消息发送状态
@@ -255,14 +256,18 @@ esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed);
 esp_err_t ac_client_get_fan_speed(uint16_t server_addr);
 
 /**
- * @brief Stores relevant BLE mesh information (including server list) to NVS.
+ * @brief 存储BLE mesh相关信息（包括服务器列表）到NVS
+ * 
+ * @return esp_err_t ESP_OK成功，其他值失败
  */
-void ac_ble_mesh_store_info(void);
+esp_err_t ac_ble_mesh_store_info(void);
 
 /**
- * @brief Restores relevant BLE mesh information (including server list) from NVS.
+ * @brief 从NVS恢复BLE mesh相关信息（包括服务器列表）
+ * 
+ * @return esp_err_t ESP_OK成功，其他值失败
  */
-void ac_ble_mesh_restore_info(void);
+esp_err_t ac_ble_mesh_restore_info(void);
 
 /**
  * @brief Adds a new AC server's unicast address to the list of managed devices if not already present and space is available.

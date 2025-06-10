@@ -2,6 +2,7 @@
 
 #include "ac_control.h"
 #include "ac_msg_queue.h"
+#include "ac_storage.h"
 #include "esp_log.h"
 #include "esp_ble_mesh_defs.h"
 #include "esp_ble_mesh_common_api.h"
@@ -16,7 +17,6 @@
 #include "esp_timer.h"
 
 #include "mesh_common.h"
-#include "ble_mesh_example_nvs.h"
 
 #define TAG "AC_CLIENT"
 
@@ -45,32 +45,14 @@ static struct esp_ble_mesh_key {
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN];
 // static uint16_t client_primary_addr;
 
-/* Structure to hold information about each managed AC server */
-typedef struct {
-    uint16_t addr;                          /* Server unicast address */
-    bool is_online;                         /* Online status */
-    bool is_configured;                     /* Configuration completed status */
-    uint8_t consecutive_timeouts;           /* Count of consecutive send timeouts */
-    /* 扩展设备状态信息 */
-    uint8_t power_state;                    /* 电源状态 */
-    uint8_t temperature;                    /* 设定温度 */
-    uint8_t mode;                           /* 运行模式 */
-    uint8_t fan_speed;                      /* 风速 */
-    char device_name[16];                   /* 设备名称 */
-    uint32_t last_update_time;              /* 最后更新时间戳 */
-} ac_server_info_t;
+/* 使用存储模块定义的类型 */
+typedef ac_storage_server_info_t ac_server_info_t;
 
-static struct example_info_store {
-    ac_server_info_t servers[MAX_AC_SERVERS]; /* Array of AC server information */
-    uint8_t num_servers;                      /* Number of currently stored server addresses */
-    uint16_t vnd_tid;                         /* TID contained in the vendor message */
-} store = {
+/* 设备信息存储实例 */
+static ac_storage_device_info_t store = {
     .num_servers = 0,
     .vnd_tid = 0,
 };
-
-static nvs_handle_t NVS_HANDLE;
-static const char * NVS_KEY = "ac_client_nvs";
 
 /* 回调函数指针 */
 static ac_device_status_callback_t device_status_cb = NULL;
@@ -206,6 +188,13 @@ static void _on_device_configured(uint16_t device_addr) {
     
     ESP_LOGI(TAG, "Device 0x%04x is now configured and ready for communication!", device_addr);
     
+    // 保存设备配置状态到NVS
+    ESP_LOGD(TAG, "Device 0x%04x configured, saving to NVS", device_addr);
+    esp_err_t save_err = ac_ble_mesh_store_info();
+    if (save_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to save device configuration status: %s", esp_err_to_name(save_err));
+    }
+    
     // Call device online callback
     if (device_online_cb) {
         device_online_cb(device_addr, true);
@@ -251,6 +240,13 @@ static void _update_device_status(int server_idx, ac_status_type_t status_type, 
     if (device_status_cb) {
         device_status_cb(server->addr, status_type, value);
     }
+    
+    // 保存更新后的设备状态到NVS
+    ESP_LOGD(TAG, "Device 0x%04x status updated, saving to NVS", server->addr);
+    esp_err_t err = ac_ble_mesh_store_info();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to save device status after update: %s", esp_err_to_name(err));
+    }
 }
 
 /* 处理状态消息 */
@@ -265,15 +261,19 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
         bool was_online = store.servers[server_idx].is_online;
         bool was_configured = store.servers[server_idx].is_configured;
         
+        bool status_changed = false;
+        
         // If device can send messages, it means it's configured
         if (!was_configured) {
             ESP_LOGI(TAG, "Device 0x%04x automatically marked as configured (received message)", src_addr);
             store.servers[server_idx].is_configured = true;
+            status_changed = true;
         }
         
         if (!was_online) {
             ESP_LOGI(TAG, "Server 0x%04x is back online.", src_addr);
             store.servers[server_idx].is_online = true;
+            status_changed = true;
             // 调用设备上线回调
             if (device_online_cb) {
                 device_online_cb(src_addr, true);
@@ -281,6 +281,15 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
         }
         store.servers[server_idx].is_online = true;
         store.servers[server_idx].consecutive_timeouts = 0;
+        
+        // 如果设备状态发生了重要变化，保存到NVS
+        if (status_changed) {
+            ESP_LOGD(TAG, "Device 0x%04x online/config status changed, saving to NVS", src_addr);
+            esp_err_t save_err = ac_ble_mesh_store_info();
+            if (save_err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to save device status change: %s", esp_err_to_name(save_err));
+            }
+        }
     }
 
     switch (opcode) {
@@ -402,6 +411,12 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                         // 调用设备下线回调
                         if (device_online_cb) {
                             device_online_cb(store.servers[timed_out_server_idx].addr, false);
+                        }
+                        // 保存设备下线状态
+                        ESP_LOGD(TAG, "Device 0x%04x went offline, saving to NVS", store.servers[timed_out_server_idx].addr);
+                        esp_err_t save_err = ac_ble_mesh_store_info();
+                        if (save_err != ESP_OK) {
+                            ESP_LOGW(TAG, "Failed to save device offline status: %s", esp_err_to_name(save_err));
                         }
                         // Optionally, you might want to reset consecutive_timeouts here or keep it
                         // to indicate it went offline due to N timeouts. For now, let's keep it.
@@ -531,24 +546,43 @@ esp_err_t ac_client_get_fan_speed(uint16_t server_addr)
     return ESP_OK;
 }
 
-void ac_ble_mesh_store_info(void)
+esp_err_t ac_ble_mesh_store_info(void)
 {
-    ble_mesh_nvs_store(NVS_HANDLE, NVS_KEY, &store, sizeof(store));
+    ESP_LOGI(TAG, "Storing device info to NVS: %u servers, vnd_tid: 0x%04x", store.num_servers, store.vnd_tid);
+    
+    // 打印将要保存的设备信息（调试用）
+    for (uint8_t i = 0; i < store.num_servers; i++) {
+        ESP_LOGI(TAG, "  Server[%u]: addr=0x%04x, online=%s, configured=%s, name=%s", 
+                 i, store.servers[i].addr, 
+                 store.servers[i].is_online ? "Y" : "N",
+                 store.servers[i].is_configured ? "Y" : "N",
+                 store.servers[i].device_name);
+    }
+    
+    esp_err_t err = ac_storage_save_device_info(&store);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save device info: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Successfully saved device info to storage");
+    }
+    
+    return err;
 }
 
-void ac_ble_mesh_restore_info(void)
+esp_err_t ac_ble_mesh_restore_info(void)
 {
     esp_err_t err = ESP_OK;
     bool exist = false;
 
-    // Initialize server_addrs to unassigned before restoring
-    for (int i = 0; i < MAX_AC_SERVERS; i++) {
-        // store.server_addrs[i] = ESP_BLE_MESH_ADDR_UNASSIGNED; // Old way
+    ESP_LOGI(TAG, "Restoring device info from NVS");
+
+    // 初始化存储结构体为默认值
+    for (int i = 0; i < MAX_AC_SERVERS; i++) { // MAX_AC_SERVERS 在存储模块中固定为8
         store.servers[i].addr = ESP_BLE_MESH_ADDR_UNASSIGNED;
-        store.servers[i].is_online = false; // Default to offline until proven otherwise
-        store.servers[i].is_configured = false; // Default to not configured
+        store.servers[i].is_online = false;
+        store.servers[i].is_configured = false;
         store.servers[i].consecutive_timeouts = 0;
-        // 初始化扩展字段
+        // 初始化设备状态
         store.servers[i].power_state = AC_POWER_OFF;
         store.servers[i].temperature = 25;
         store.servers[i].mode = AC_MODE_AUTO;
@@ -558,14 +592,24 @@ void ac_ble_mesh_restore_info(void)
     }
     store.num_servers = 0;
 
-    err = ble_mesh_nvs_restore(NVS_HANDLE, NVS_KEY, &store, sizeof(store), &exist);
+    // 从存储模块加载数据
+    err = ac_storage_load_device_info(&store, &exist);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to restore NVS info (err %d)", err);
-        return;
+        ESP_LOGW(TAG, "Failed to restore device info from storage: %s", esp_err_to_name(err));
+        return err;
     }
 
     if (exist) {
-        ESP_LOGI(TAG, "Restored NVS: num_servers %u, vnd_tid 0x%04x", store.num_servers, store.vnd_tid);
+        ESP_LOGI(TAG, "Restored device info: num_servers %u, vnd_tid 0x%04x", store.num_servers, store.vnd_tid);
+        
+        // 打印加载的设备信息（调试用）
+        for (uint8_t i = 0; i < store.num_servers; i++) {
+            ESP_LOGI(TAG, "  Loaded Server[%u]: addr=0x%04x, online=%s, configured=%s, name=%s", 
+                     i, store.servers[i].addr, 
+                     store.servers[i].is_online ? "Y" : "N",
+                     store.servers[i].is_configured ? "Y" : "N",
+                     store.servers[i].device_name);
+        }
         // 重启后强制所有服务器状态为离线，只有收到消息后才标记为在线
         for (uint8_t i = 0; i < store.num_servers; i++) {
             // 强制设置为离线状态，重置超时计数器
@@ -580,8 +624,10 @@ void ac_ble_mesh_restore_info(void)
                      i, store.servers[i].addr, store.servers[i].device_name);
         }
     } else {
-        ESP_LOGI(TAG, "NVS info not found or empty.");
+        ESP_LOGI(TAG, "No device info found in storage, using defaults");
     }
+
+    return ESP_OK;
 }
 
 // uint16_t ac_get_server_addr(void)
@@ -968,14 +1014,11 @@ static esp_err_t ac_ble_mesh_init(void)
 {
     esp_err_t err;
     
-    // Initialize NVS for storing BLE Mesh info
-    // Note: Ensure ble_mesh_nvs_open is available in your project.
-    // If not, you might need to implement or copy it from ESP-IDF examples.
-    err = ble_mesh_nvs_open(&NVS_HANDLE); 
+    // 初始化存储模块
+    err = ac_storage_init("ac_client");
     if (err != ESP_OK) {
-         ESP_LOGE(TAG, "Failed to open NVS for AC client (err %d). Ensure NVS is initialized in main.", err);
-        // Not returning here, as NVS might be optional for basic operation if no prior info exists.
-        // However, storing/restoring will fail.
+        ESP_LOGE(TAG, "Failed to initialize storage module: %s. Ensure NVS is initialized in main.", esp_err_to_name(err));
+        // 存储模块初始化失败不影响基本操作，但无法保存/恢复数据
     }
 
     // Initialize device UUID. 
@@ -1331,11 +1374,14 @@ esp_err_t ac_client_init(void)
         // 直接设置我们的模型引用，假设BLE Mesh栈已经正确设置
         ac_client.model = &vnd_models[0];
         
-        // 初始化NVS句柄，如果还没有的话
-        if (NVS_HANDLE == 0) {
-            esp_err_t nvs_err = ble_mesh_nvs_open(&NVS_HANDLE);
-            if (nvs_err != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to open NVS for AC client (err %d)", nvs_err);
+        // 初始化存储模块，如果还没有的话
+        if (!ac_storage_is_initialized()) {
+            esp_err_t storage_err = ac_storage_init("ac_client");
+            if (storage_err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to initialize storage module: %s", esp_err_to_name(storage_err));
+            } else {
+                ESP_LOGI(TAG, "Storage module initialized successfully");
+                ac_storage_print_status();  // 打印存储状态信息
             }
         }
         
