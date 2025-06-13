@@ -135,8 +135,8 @@ void display_init(void)
         return;
     }
 
-    /* Rotation of the screen - typically not needed for fixed orientation OLEDs */
-    // lv_disp_set_rotation(disp, LV_DISP_ROT_NONE);
+    /* Rotation of the screen to 180 degrees for upside-down display */
+    lv_disp_set_rotation(disp, LV_DISP_ROT_180);
 
     ESP_LOGI(TAG, "Setting up UI using gui_guider functions...");
     

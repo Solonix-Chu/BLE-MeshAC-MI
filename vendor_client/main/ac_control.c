@@ -296,20 +296,12 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
     switch (opcode) {
         case AC_OP_HEARTBEAT:
             ESP_LOGD(TAG, "Received heartbeat from server 0x%04x", src_addr);
-            /* 发送心跳包ACK响应 */
-            esp_ble_mesh_msg_ctx_t ctx = {0};
-            ctx.net_idx = prov_key.net_idx;
-            ctx.app_idx = prov_key.app_idx;
-            ctx.addr = src_addr;
-            ctx.send_ttl = MSG_SEND_TTL;
-            
-            /* 使用服务器模型发送ACK响应 */
-            esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0], &ctx, AC_OP_HEARTBEAT_ACK,
-                                                             0, NULL);
+            /* 将心跳包ACK响应加入消息队列，使用统一的发送机制 */
+            esp_err_t err = _enqueue_message(AC_MSG_TYPE_HEARTBEAT_ACK, src_addr, 0);
             if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to send heartbeat ACK to 0x%04x (err %d)", src_addr, err);
+                ESP_LOGE(TAG, "Failed to enqueue heartbeat ACK to 0x%04x: %s", src_addr, esp_err_to_name(err));
             } else {
-                ESP_LOGD(TAG, "Heartbeat ACK sent to server 0x%04x", src_addr);
+                ESP_LOGD(TAG, "Heartbeat ACK enqueued for server 0x%04x", src_addr);
             }
             return; /* 心跳包不需要进一步处理 */
         case AC_OP_POWER_STATUS:
@@ -1341,24 +1333,35 @@ static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, 
         return ESP_ERR_NO_MEM;
     }
     
-    bool queue_was_empty = (queue_count == 0);
+    // 检查目标设备是否已配置完成（心跳ACK除外）
+    if (msg_type != AC_MSG_TYPE_HEARTBEAT_ACK) {
+        int server_idx = _find_server_index(server_addr);
+        if (server_idx == -1) {
+            ESP_LOGE(TAG, "Target device 0x%04x not found in server list", server_addr);
+            return ESP_ERR_NOT_FOUND;
+        }
+        
+        if (!store.servers[server_idx].is_configured) {
+            ESP_LOGW(TAG, "Target device 0x%04x is not configured yet, cannot send message", server_addr);
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
     
-    msg_queue[queue_tail].msg_type = msg_type;
-    msg_queue[queue_tail].server_addr = server_addr;
-    msg_queue[queue_tail].value = value;
-    msg_queue[queue_tail].timestamp = _get_current_timestamp();
+    // 创建消息项
+    ac_msg_queue_item_t *item = &msg_queue[queue_tail];
+    item->msg_type = msg_type;
+    item->server_addr = server_addr;
+    item->value = value;
+    item->timestamp = _get_current_timestamp();
     
     queue_tail = (queue_tail + 1) % AC_MSG_QUEUE_SIZE;
     queue_count++;
     
     ESP_LOGD(TAG, "Enqueued message type %d to 0x%04x, queue size: %d", msg_type, server_addr, queue_count);
     
-    // 只有当队列之前为空且当前没有消息在发送时，才立即处理
-    if (queue_was_empty && send_state == AC_SEND_STATE_IDLE) {
-        ESP_LOGD(TAG, "Queue was empty, processing message immediately");
+    // 如果当前没有正在发送的消息，立即处理
+    if (send_state == AC_SEND_STATE_IDLE) {
         _process_next_message();
-    } else {
-        ESP_LOGD(TAG, "Message queued, waiting for current transmission to complete");
     }
     
     return ESP_OK;
@@ -1420,16 +1423,18 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
         return ESP_ERR_INVALID_STATE;
     }
     
-    // 检查目标设备是否已配置完成
-    int server_idx = _find_server_index(msg->server_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Target device 0x%04x not found in server list", msg->server_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    if (!store.servers[server_idx].is_configured) {
-        ESP_LOGW(TAG, "Target device 0x%04x is not configured yet, cannot send message", msg->server_addr);
-        return ESP_ERR_INVALID_STATE;
+    // 检查目标设备是否已配置完成（心跳ACK除外）
+    if (msg->msg_type != AC_MSG_TYPE_HEARTBEAT_ACK) {
+        int server_idx = _find_server_index(msg->server_addr);
+        if (server_idx == -1) {
+            ESP_LOGE(TAG, "Target device 0x%04x not found in server list", msg->server_addr);
+            return ESP_ERR_NOT_FOUND;
+        }
+        
+        if (!store.servers[server_idx].is_configured) {
+            ESP_LOGW(TAG, "Target device 0x%04x is not configured yet, cannot send message", msg->server_addr);
+            return ESP_ERR_INVALID_STATE;
+        }
     }
     
     // 根据消息类型设置操作码和数据
@@ -1476,6 +1481,11 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
             break;
         case AC_MSG_TYPE_GET_FAN_SPEED:
             opcode = AC_OP_GET_FAN_SPEED;
+            data = NULL;
+            length = 0;
+            break;
+        case AC_MSG_TYPE_HEARTBEAT_ACK:
+            opcode = AC_OP_HEARTBEAT_ACK;
             data = NULL;
             length = 0;
             break;

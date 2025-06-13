@@ -25,6 +25,7 @@ typedef enum {
     AC_MSG_TYPE_GET_MODE,
     AC_MSG_TYPE_SET_FAN_SPEED,
     AC_MSG_TYPE_GET_FAN_SPEED,
+    AC_MSG_TYPE_HEARTBEAT_ACK,  /* 新增：心跳ACK类型 */
 } ac_msg_type_t;
 
 /* 消息队列项结构 */

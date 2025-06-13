@@ -18,7 +18,7 @@ extern "C" {
 #include "driver/gpio.h" // For GPIO_NUM_48 definition
 
 /* WS2812 LED Configuration */
-#define WS2812_LED_GPIO  GPIO_NUM_48
+#define WS2812_LED_GPIO  GPIO_NUM_21
 #define WS2812_LED_COUNT 1
 
 /* LED Status/Color representations */

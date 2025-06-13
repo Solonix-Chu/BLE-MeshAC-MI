@@ -190,6 +190,13 @@ esp_err_t ac_server_load_state_from_flash(void);
  */
 esp_err_t ac_server_clear_state_from_flash(void);
 
+/**
+ * @brief Get the current device mesh address
+ * 
+ * @return uint16_t Device mesh address (0 if not provisioned)
+ */
+uint16_t ac_server_get_device_addr(void);
+
 #ifdef __cplusplus
 }
 #endif

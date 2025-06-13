@@ -28,9 +28,9 @@
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN] = {0xdd,0xdd};
 
 static esp_ble_mesh_cfg_srv_t config_server = {
-    .net_transmit = ESP_BLE_MESH_TRANSMIT(2, 20),
-    .relay = ESP_BLE_MESH_RELAY_DISABLED,
-    .relay_retransmit = ESP_BLE_MESH_TRANSMIT(2, 20),
+    .net_transmit = ESP_BLE_MESH_TRANSMIT(3, 20),
+    .relay = ESP_BLE_MESH_RELAY_ENABLED,
+    .relay_retransmit = ESP_BLE_MESH_TRANSMIT(3, 20),
     .beacon = ESP_BLE_MESH_BEACON_ENABLED,
 #if defined(CONFIG_BLE_MESH_GATT_PROXY_SERVER)
     .gatt_proxy = ESP_BLE_MESH_GATT_PROXY_ENABLED,
@@ -81,6 +81,18 @@ static struct {
     .fan_speed = AC_FAN_SPEED_LOW
 };
 
+/* 设备Mesh地址 */
+static uint16_t device_mesh_addr = 0;
+
+/* 格式化设备名称 */
+static void update_device_name_display(uint16_t addr)
+{
+    char device_name[16];
+    snprintf(device_name, sizeof(device_name), "DEVICE_%04u", addr);
+    ESP_LOGI(TAG_AC_CTRL, "Updating device name to: %s (addr: 0x%04x)", device_name, addr);
+    ui_update_device_name(device_name);
+}
+
 /* 定义模型操作项 */
 esp_ble_mesh_model_op_t ac_server_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_POWER, 1),
@@ -129,6 +141,13 @@ static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32
 {
     ESP_LOGI(TAG_AC_CTRL, "Provisioning complete: net_idx 0x%03x, addr 0x%04x", net_idx, addr);
     ESP_LOGI(TAG_AC_CTRL, "flags 0x%02x, iv_index 0x%08" PRIx32, flags, iv_index);
+    
+    // 保存设备地址
+    device_mesh_addr = addr;
+    
+    // 更新设备名称显示
+    update_device_name_display(addr);
+    
     // board_led_operation(LED_STATE_SUCCESS);
     ESP_LOGI(TAG_AC_CTRL, "Waiting for app key binding before starting heartbeat");
 }
@@ -158,6 +177,9 @@ static void example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
         break;
     case ESP_BLE_MESH_NODE_PROV_RESET_EVT:
         ESP_LOGI(TAG_AC_CTRL, "ESP_BLE_MESH_NODE_PROV_RESET_EVT");
+        // 重置设备地址和名称显示
+        device_mesh_addr = 0;
+        ui_update_device_name("Unprovisioned");
         break;
     case ESP_BLE_MESH_NODE_SET_UNPROV_DEV_NAME_COMP_EVT:
         ESP_LOGI(TAG_AC_CTRL, "ESP_BLE_MESH_NODE_SET_UNPROV_DEV_NAME_COMP_EVT, err_code %d", param->node_set_unprov_dev_name_comp.err_code);
@@ -201,6 +223,7 @@ static void example_ble_mesh_config_server_cb(esp_ble_mesh_cfg_server_cb_event_t
             }
             board_led_operation(LED_STATE_SUCCESS);
             break;
+
         default:
             break;
         }
@@ -217,9 +240,10 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
 
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        ESP_LOGI(TAG_AC_CTRL, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d",
+        ESP_LOGI(TAG_AC_CTRL, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d, TTL=%d",
                  param->model_operation.opcode, param->model_operation.ctx->addr,
-                 param->model_operation.ctx->recv_dst, param->model_operation.length);
+                 param->model_operation.ctx->recv_dst, param->model_operation.length,
+                 param->model_operation.ctx->recv_ttl);
 
         switch (param->model_operation.opcode) {
             case AC_OP_SET_POWER:
@@ -301,7 +325,8 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
         }
 
         if (err == ESP_OK && status_opcode != 0) {
-            ESP_LOGI(TAG_AC_CTRL, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x", status_opcode, status_payload);
+            ESP_LOGI(TAG_AC_CTRL, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x to 0x%04x (TTL=%d)", 
+                     status_opcode, status_payload, param->model_operation.ctx->addr, param->model_operation.ctx->send_ttl);
             esp_err_t send_err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
                                                                     param->model_operation.ctx,
                                                                     status_opcode,
@@ -347,6 +372,17 @@ esp_err_t ac_server_init(void)
     esp_err_t err;
 
     ESP_LOGI(TAG_AC_CTRL, "Initializing AC BLE Mesh Server Module...");
+    
+    // 输出BLE Mesh配置信息
+    ESP_LOGI(TAG_AC_CTRL, "BLE Mesh Configuration:");
+    ESP_LOGI(TAG_AC_CTRL, "  - Relay: %s", config_server.relay ? "ENABLED" : "DISABLED");
+    ESP_LOGI(TAG_AC_CTRL, "  - Default TTL: %d", config_server.default_ttl);
+    ESP_LOGI(TAG_AC_CTRL, "  - Network Transmit: Count=%d, Interval=%dms", 
+             (config_server.net_transmit & 0x07) + 1, 
+             ((config_server.net_transmit >> 3) + 1) * 10);
+    ESP_LOGI(TAG_AC_CTRL, "  - Relay Retransmit: Count=%d, Interval=%dms", 
+             (config_server.relay_retransmit & 0x07) + 1, 
+             ((config_server.relay_retransmit >> 3) + 1) * 10);
 
     // Initialize NVS for state storage
     err = ac_server_nvs_init();
@@ -654,16 +690,18 @@ esp_err_t ac_server_send_heartbeat(void)
         ESP_LOGW(TAG_AC_CTRL, "Heartbeat send skipped: not enabled or invalid client address (0x%04x)", heartbeat_state.client_addr);
         return ESP_ERR_INVALID_STATE;
     }
+    
     esp_ble_mesh_msg_ctx_t ctx = {0};
-    ctx.net_idx = 0;
-    ctx.app_idx = 0;
-    ctx.addr = heartbeat_state.client_addr;
-    ctx.send_ttl = 7;
+    ctx.net_idx = 0;    // 网络索引
+    ctx.app_idx = 0;    // 应用密钥索引
+    ctx.addr = heartbeat_state.client_addr;  // 目标地址
+    ctx.send_ttl = config_server.default_ttl;  // 使用配置的默认TTL值，支持多跳转发
+    
     esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[0], &ctx, AC_OP_HEARTBEAT, 0, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_AC_CTRL, "Failed to send heartbeat to 0x%04x (err %d)", heartbeat_state.client_addr, err);
     } else {
-        ESP_LOGD(TAG_AC_CTRL, "Heartbeat sent to client 0x%04x", heartbeat_state.client_addr);
+        ESP_LOGD(TAG_AC_CTRL, "Heartbeat sent to client 0x%04x with TTL=%d", heartbeat_state.client_addr, ctx.send_ttl);
     }
     return err;
 }
@@ -805,7 +843,6 @@ esp_err_t ac_server_load_state_from_flash(void)
 {
     nvs_handle_t nvs_handle;
     esp_err_t err;
-    size_t required_size = 0;
 
     // Open NVS handle
     err = nvs_open(AC_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
@@ -919,4 +956,12 @@ esp_err_t ac_server_clear_state_from_flash(void)
     ESP_LOGI(TAG_AC_CTRL, "AC state cleared from flash storage");
 
     return ESP_OK;
+}
+
+/**
+ * @brief Get the current device mesh address
+ */
+uint16_t ac_server_get_device_addr(void)
+{
+    return device_mesh_addr;
 }

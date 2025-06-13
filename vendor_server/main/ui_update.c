@@ -187,8 +187,8 @@ esp_err_t ui_update_init(void)
     // Wait a bit for UI to be fully set up
     vTaskDelay(pdMS_TO_TICKS(500));
     
-    // Set initial device name
-    ui_update_device_name("AC Server");
+    // Set initial device name (before provisioning)
+    ui_update_device_name("Unprovisioned");
     
     // Update with current AC status
     ui_update_ac_status();
