@@ -253,6 +253,10 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                     err = ac_server_set_power(value_received);
                     status_payload = ac_server_get_current_power();
                     status_opcode = AC_OP_POWER_STATUS;
+                    // Show temporary purple LED for SET command
+                    if (err == ESP_OK) {
+                        board_led_temp_blink(128, 0, 128, 1, 200);  // Purple, 1 blink, 200ms
+                    }
                 } else {
                     ESP_LOGE(TAG_AC_CTRL, "AC_OP_SET_POWER: Invalid message length %d, expected 1", param->model_operation.length);
                     err = ESP_ERR_INVALID_ARG;
@@ -270,6 +274,10 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                     err = ac_server_set_temperature(value_received);
                     status_payload = ac_server_get_current_temperature();
                     status_opcode = AC_OP_TEMPERATURE_STATUS;
+                    // Show temporary purple LED for SET command
+                    if (err == ESP_OK) {
+                        board_led_temp_blink(128, 0, 128, 1, 200);  // Purple, 1 blink, 200ms
+                    }
                 } else {
                     ESP_LOGE(TAG_AC_CTRL, "AC_OP_SET_TEMPERATURE: Invalid message length %d, expected 1", param->model_operation.length);
                     err = ESP_ERR_INVALID_ARG;
@@ -287,6 +295,10 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                     err = ac_server_set_mode(value_received);
                     status_payload = ac_server_get_current_mode();
                     status_opcode = AC_OP_MODE_STATUS;
+                    // Show temporary purple LED for SET command
+                    if (err == ESP_OK) {
+                        board_led_temp_blink(128, 0, 128, 1, 100);  // Purple, 1 blink, 200ms
+                    }
                 } else {
                     ESP_LOGE(TAG_AC_CTRL, "AC_OP_SET_MODE: Invalid message length %d, expected 1", param->model_operation.length);
                     err = ESP_ERR_INVALID_ARG;
@@ -304,6 +316,10 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                     err = ac_server_set_fan_speed(value_received);
                     status_payload = ac_server_get_current_fan_speed();
                     status_opcode = AC_OP_FAN_SPEED_STATUS;
+                    // Show temporary purple LED for SET command
+                    if (err == ESP_OK) {
+                        board_led_temp_blink(128, 0, 128, 1, 100);  // Purple, 1 blink, 200ms
+                    }
                 } else {
                     ESP_LOGE(TAG_AC_CTRL, "AC_OP_SET_FAN_SPEED: Invalid message length %d, expected 1", param->model_operation.length);
                     err = ESP_ERR_INVALID_ARG;

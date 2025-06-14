@@ -61,7 +61,7 @@ extern "C" {
 #define AC_TEMP_MAX             30
 
 /* Maximum number of AC server devices that can be managed */
-#define MAX_AC_SERVERS 5
+#define MAX_AC_SERVERS 10
 
 #ifdef __cplusplus
 }

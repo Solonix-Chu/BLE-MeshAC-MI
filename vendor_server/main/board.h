@@ -29,6 +29,7 @@ extern "C" {
 #define LED_STATE_SUCCESS 2 // Operation Succeeded (e.g., Green)
 #define LED_STATE_ERROR   3 // Operation Failed (e.g., Red)
 #define LED_STATE_HEARTBEAT 4 // Blinking or specific color for heartbeat
+#define LED_STATE_COMMAND_RECEIVED 5 // Command received (Purple, temporary)
 
 // Old LED_R, LED_G, LED_B, LED_ON, LED_OFF macros are removed or repurposed.
 // The old struct _led_state is no longer needed.
@@ -66,6 +67,24 @@ void board_ws2812_set_brightness(uint8_t brightness);
  * @param state One of the LED_STATE_ macros (e.g., LED_STATE_PROV)
  */
 void board_led_operation(uint8_t state);
+
+/**
+ * @brief Temporarily show purple LED for 100ms to indicate command received.
+ *        After 100ms, the LED will restore to the previous state.
+ */
+void board_led_temp_purple(void);
+
+/**
+ * @brief Temporarily blink LED with specified color, count and duration.
+ *        After blinking, the LED will restore to the previous state.
+ * 
+ * @param r Red component (0-255)
+ * @param g Green component (0-255) 
+ * @param b Blue component (0-255)
+ * @param blink_count Number of blinks
+ * @param blink_duration_ms Duration of each blink in milliseconds
+ */
+void board_led_temp_blink(uint8_t r, uint8_t g, uint8_t b, uint8_t blink_count, uint32_t blink_duration_ms);
 
 /**
  * @brief Initialize the board (currently only initializes WS2812 LED).

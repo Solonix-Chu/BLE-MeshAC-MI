@@ -12,6 +12,7 @@
 #include "board.h"        // Contains WS2812_LED_GPIO, LED_STATE_ definitions
 #include "led_strip.h"    // ESP-IDF RMT LED strip driver
 #include "sdkconfig.h"    // For KConfig options if any are relevant (e.g. RMT channel count)
+#include "esp_timer.h"    // For temporary LED timer
 
 #define TAG "BOARD_RMT_WS2812"
 
@@ -21,6 +22,28 @@ static led_strip_handle_t led_strip;
 // Global brightness control (0-255, where 255 is full brightness)
 // Let's default to a dimmer value, e.g., 64 for ~25% brightness or 128 for ~50%
 static uint8_t g_led_brightness = 16; 
+
+// LED blinking state structure
+typedef struct {
+    esp_timer_handle_t timer_handle;
+    uint8_t r, g, b;  // Blink color
+    uint8_t remaining_blinks;  // Remaining blink count
+    uint32_t blink_duration_ms;  // Duration of each blink
+    uint8_t previous_led_state;  // Previous LED state to restore
+    bool is_active;  // Whether blinking is active
+    bool is_showing_color;  // Whether currently showing blink color
+} led_blink_state_t;
+
+// Global blink state
+static led_blink_state_t blink_state = {
+    .timer_handle = NULL,
+    .r = 0, .g = 0, .b = 0,
+    .remaining_blinks = 0,
+    .blink_duration_ms = 0,
+    .previous_led_state = LED_STATE_OFF,
+    .is_active = false,
+    .is_showing_color = false
+};
 
 /**
  * @brief Sets the global brightness for the WS2812 LED.
@@ -82,6 +105,11 @@ void board_led_operation(uint8_t state)
         return;
     }
 
+    // Record the current state unless it's a temporary blink state
+    if (state != LED_STATE_COMMAND_RECEIVED && !blink_state.is_active) {
+        blink_state.previous_led_state = state;
+    }
+
     switch (state) {
         case LED_STATE_OFF:
             board_ws2812_turn_off();
@@ -102,6 +130,10 @@ void board_led_operation(uint8_t state)
         case LED_STATE_HEARTBEAT: // Example: Yellow for heartbeat
             board_ws2812_set_color(255, 255, 0); // Yellow
             ESP_LOGI(TAG, "LED: Heartbeat (Yellow)");
+            break;
+        case LED_STATE_COMMAND_RECEIVED: // Command received - Purple
+            board_ws2812_set_color(128, 0, 128); // Purple
+            ESP_LOGI(TAG, "LED: Command Received (Purple)");
             break;
         default:
             ESP_LOGW(TAG, "Unknown LED state: %d, turning LED off.", state);
@@ -149,6 +181,115 @@ void board_ws2812_init(void)
         ESP_LOGE(TAG, "Failed to clear LED strip on init (err %d)", err);
     }
     ESP_LOGI(TAG, "Initial WS2812 LED state: OFF");
+}
+
+// Cleanup function for blink state
+static void cleanup_blink_state(void)
+{
+    blink_state.is_active = false;
+    blink_state.is_showing_color = false;
+    blink_state.remaining_blinks = 0;
+    
+    if (blink_state.timer_handle != NULL) {
+        esp_timer_stop(blink_state.timer_handle);
+        esp_timer_delete(blink_state.timer_handle);
+        blink_state.timer_handle = NULL;
+    }
+    
+    ESP_LOGI(TAG, "Blinking completed, restoring LED to previous state: %d", blink_state.previous_led_state);
+    board_led_operation(blink_state.previous_led_state);
+}
+
+// Timer callback function for LED blinking
+static void led_blink_timer_callback(void* arg)
+{
+    if (!blink_state.is_active) {
+        return;
+    }
+    
+    if (blink_state.is_showing_color) {
+        // Currently showing blink color, switch back to previous state
+        board_led_operation(blink_state.previous_led_state);
+        blink_state.is_showing_color = false;
+        blink_state.remaining_blinks--;
+        
+        if (blink_state.remaining_blinks > 0) {
+            // More blinks remaining, schedule next blink after a short interval
+            esp_err_t err = esp_timer_start_once(blink_state.timer_handle, 50 * 1000); // 50ms interval
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to schedule next blink (err %d)", err);
+                cleanup_blink_state();
+            }
+        } else {
+            // Blinking complete
+            cleanup_blink_state();
+        }
+    } else {
+        // Currently showing previous state, switch to blink color
+        board_ws2812_set_color(blink_state.r, blink_state.g, blink_state.b);
+        blink_state.is_showing_color = true;
+        esp_err_t err = esp_timer_start_once(blink_state.timer_handle, blink_state.blink_duration_ms * 1000);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to schedule blink duration (err %d)", err);
+            cleanup_blink_state();
+        }
+    }
+}
+
+void board_led_temp_blink(uint8_t r, uint8_t g, uint8_t b, uint8_t blink_count, uint32_t blink_duration_ms)
+{
+    if (!led_strip) {
+        ESP_LOGE(TAG, "LED strip not initialized, cannot blink LED");
+        return;
+    }
+    
+    if (blink_count == 0 || blink_duration_ms == 0) {
+        ESP_LOGW(TAG, "Invalid blink parameters: count=%d, duration=%lu", blink_count, blink_duration_ms);
+        return;
+    }
+    
+    // If a blink timer is already running, ignore this request
+    if (blink_state.is_active) {
+        ESP_LOGD(TAG, "LED blinking already active, ignoring request");
+        return;
+    }
+    
+    // Initialize blink state
+    blink_state.r = r;
+    blink_state.g = g;
+    blink_state.b = b;
+    blink_state.remaining_blinks = blink_count;
+    blink_state.blink_duration_ms = blink_duration_ms;
+    blink_state.is_active = true;
+    blink_state.is_showing_color = false;
+    
+    // Create timer
+    const esp_timer_create_args_t timer_args = {
+        .callback = &led_blink_timer_callback,
+        .name = "led_blink_timer"
+    };
+    
+    esp_err_t err = esp_timer_create(&timer_args, &blink_state.timer_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create blink timer (err %d)", err);
+        blink_state.is_active = false;
+        return;
+    }
+    
+    // Start first blink immediately (switch to blink color)
+    board_ws2812_set_color(blink_state.r, blink_state.g, blink_state.b);
+    blink_state.is_showing_color = true;
+    
+    err = esp_timer_start_once(blink_state.timer_handle, blink_state.blink_duration_ms * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start blink timer (err %d)", err);
+        esp_timer_delete(blink_state.timer_handle);
+        blink_state.timer_handle = NULL;
+        blink_state.is_active = false;
+    } else {
+        ESP_LOGI(TAG, "LED blinking started: RGB(%d,%d,%d), count=%d, duration=%lums", 
+                 r, g, b, blink_count, blink_duration_ms);
+    }
 }
 
 void board_init(void)

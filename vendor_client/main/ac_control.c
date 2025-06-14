@@ -775,7 +775,7 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
     case ESP_BLE_MESH_PROV_REGISTER_COMP_EVT:
         ESP_LOGI(TAG, "ProvRegisterComp: err %d", param->prov_register_comp.err_code);
         if(param->prov_register_comp.err_code == ESP_OK) {
-            ac_ble_mesh_restore_info(); 
+            // ac_ble_mesh_restore_info(); 
         }
         break;
     case ESP_BLE_MESH_PROVISIONER_PROV_ENABLE_COMP_EVT:
