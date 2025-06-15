@@ -204,6 +204,35 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
         return ESP_ERR_INVALID_ARG;
     }
     
+    // 检查是否为连接切换请求
+    if (param == DC_PARAM_MAX && value == 0xFF) {
+        ESP_LOGI(TAG, "Processing device connection toggle for device 0x%04X", device_addr);
+        
+        // 切换设备连接状态
+        ret = ac_toggle_device_connection(device_addr);
+        
+        if (ret == ESP_OK) {
+            // 检查切换后的状态并显示相应消息
+            bool is_filtered = ac_is_device_filtered(device_addr);
+            bool is_blacklisted = ac_is_device_blacklisted(device_addr);
+            if (is_blacklisted) {
+                dc_ui_integration_show_message("DEVICE REMOVED", 2000);
+                ESP_LOGI(TAG, "Device 0x%04X removed from network and blacklisted", device_addr);
+            } else if (is_filtered) {
+                dc_ui_integration_show_message("DEVICE FILTERED", 2000);
+                ESP_LOGI(TAG, "Device 0x%04X filtered from provisioning", device_addr);
+            } else {
+                dc_ui_integration_show_message("DEVICE RECONNECTING", 2000);
+                ESP_LOGI(TAG, "Device 0x%04X ready for reconnection", device_addr);
+            }
+        } else {
+            dc_ui_integration_show_message("TOGGLE FAILED", 1000);
+            ESP_LOGE(TAG, "Failed to toggle device 0x%04X connection: %s", device_addr, esp_err_to_name(ret));
+        }
+        
+        return ret;
+    }
+    
     switch (param) {
         case DC_PARAM_POWER:
             param_name = "Power";

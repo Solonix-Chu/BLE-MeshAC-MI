@@ -50,7 +50,11 @@ typedef struct {
     uint16_t addr;                          /* Server unicast address */
     bool is_online;                         /* Online status */
     bool is_configured;                     /* Configuration completed status */
+    bool is_filtered;                       /* Whether device is in provisioning filter */
+    bool is_manually_disconnected;         /* Whether device was manually disconnected */
+    bool is_blacklisted;                    /* Whether device is in blacklist (truly removed from network) */
     uint8_t consecutive_timeouts;           /* Count of consecutive send timeouts */
+    uint8_t device_uuid[ESP_BLE_MESH_OCTET16_LEN]; /* Device UUID for blacklist checking */
     /* 扩展设备状态信息 */
     uint8_t power_state;                    /* 电源状态 */
     uint8_t temperature;                    /* 设定温度 */
@@ -87,6 +91,9 @@ static ac_msg_queue_item_t current_msg; /* 当前正在发送的消息 */
 
 /* AC状态回调函数 */
 // static ac_status_callback_t ac_status_cb = NULL;
+
+/* 检查设备UUID是否在黑名单中 */
+static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid);
 
 /* 前向声明 - 消息队列管理函数 */
 static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, uint8_t value);
@@ -272,25 +279,32 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
     // Mark server as online and reset timeout count upon receiving any status message
     int server_idx = _find_server_index(src_addr);
     if (server_idx != -1) {
-        bool was_online = store.servers[server_idx].is_online;
-        bool was_configured = store.servers[server_idx].is_configured;
+        ac_server_info_t *server = &store.servers[server_idx];
+        bool was_online = server->is_online;
+        bool was_configured = server->is_configured;
+        
+        // 检查设备是否被手动断开连接或在黑名单中
+        if (server->is_manually_disconnected || server->is_blacklisted) {
+            ESP_LOGW(TAG, "Ignoring message from disconnected/blacklisted device 0x%04x", src_addr);
+            return; // 忽略来自手动断开或黑名单设备的消息
+        }
         
         // If device can send messages, it means it's configured
         if (!was_configured) {
             ESP_LOGI(TAG, "Device 0x%04x automatically marked as configured (received message)", src_addr);
-            store.servers[server_idx].is_configured = true;
+            server->is_configured = true;
         }
         
         if (!was_online) {
             ESP_LOGI(TAG, "Server 0x%04x is back online.", src_addr);
-            store.servers[server_idx].is_online = true;
+            server->is_online = true;
             // 调用设备上线回调
             if (device_online_cb) {
                 device_online_cb(src_addr, true);
             }
         }
-        store.servers[server_idx].is_online = true;
-        store.servers[server_idx].consecutive_timeouts = 0;
+        server->is_online = true;
+        server->consecutive_timeouts = 0;
     }
 
     switch (opcode) {
@@ -553,7 +567,11 @@ void ac_ble_mesh_restore_info(void)
         store.servers[i].addr = ESP_BLE_MESH_ADDR_UNASSIGNED;
         store.servers[i].is_online = false; // Default to offline until proven otherwise
         store.servers[i].is_configured = false; // Default to not configured
+        store.servers[i].is_filtered = false; // Default to not filtered
+        store.servers[i].is_manually_disconnected = false; // Default to not manually disconnected
+        store.servers[i].is_blacklisted = false; // Default to not blacklisted
         store.servers[i].consecutive_timeouts = 0;
+        memset(store.servers[i].device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID
         // 初始化扩展字段
         store.servers[i].power_state = AC_POWER_OFF;
         store.servers[i].temperature = 25;
@@ -638,7 +656,11 @@ void ac_add_server_addr(uint16_t addr)
         new_server->addr = addr;
         new_server->is_online = false;   // Will be set online when config completes and ready to communicate
         new_server->is_configured = false; // Configuration not completed yet
+        new_server->is_filtered = false; // Default to not filtered
+        new_server->is_manually_disconnected = false; // Default to not manually disconnected
+        new_server->is_blacklisted = false; // Default to not blacklisted
         new_server->consecutive_timeouts = 0;
+        memset(new_server->device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID initially
         // 初始化设备状态
         new_server->power_state = AC_POWER_OFF;
         new_server->temperature = 25; // 默认温度
@@ -718,6 +740,14 @@ static esp_err_t _prov_complete(uint16_t node_index, const esp_ble_mesh_octet16_
     ESP_LOG_BUFFER_HEX("Device UUID", uuid, ESP_BLE_MESH_OCTET16_LEN);
 
     ac_add_server_addr(primary_addr); // Use the helper
+    
+    // 保存设备UUID以便黑名单检查
+    int server_idx = _find_server_index(primary_addr);
+    if (server_idx != -1) {
+        memcpy(store.servers[server_idx].device_uuid, uuid, ESP_BLE_MESH_OCTET16_LEN);
+        ESP_LOGI(TAG, "Saved UUID for device 0x%04x", primary_addr);
+    }
+    
     ac_ble_mesh_store_info();      // Use the helper
 
     sprintf(name, "%s%02u", "NODE-", node_index);
@@ -756,6 +786,15 @@ static void _recv_unprov_adv_pkt(uint8_t dev_uuid_match[ESP_BLE_MESH_OCTET16_LEN
     ESP_LOG_BUFFER_HEX("Received Device UUID for Provisioning", dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN);
     ESP_LOGI(TAG, "OOB info 0x%04x, bearer %s", oob_info, (bearer & ESP_BLE_MESH_PROV_ADV) ? "PB-ADV" : "PB-GATT");
 
+    // 检查设备是否在黑名单中
+    if (_is_device_blacklisted_by_uuid(dev_uuid_match)) {
+        ESP_LOGW(TAG, "Device is blacklisted, rejecting provisioning request");
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN, ESP_LOG_WARN);
+        return; // 拒绝黑名单设备的配网请求
+    }
+    
+    ESP_LOGI(TAG, "Device not in blacklist, proceeding with provisioning");
+    
     memcpy(add_dev.addr, addr, BD_ADDR_LEN);
     add_dev.addr_type = addr_type;
     memcpy(add_dev.uuid, dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN);
@@ -1099,6 +1138,9 @@ uint8_t ac_get_device_list(ac_device_info_t *device_list, uint8_t max_devices)
         device_list[i].addr = server->addr;
         device_list[i].is_online = server->is_online;
         device_list[i].is_configured = server->is_configured;
+        device_list[i].is_filtered = server->is_filtered;
+        device_list[i].is_manually_disconnected = server->is_manually_disconnected;
+        device_list[i].is_blacklisted = server->is_blacklisted;
         device_list[i].power_state = server->power_state;
         device_list[i].temperature = server->temperature;
         device_list[i].mode = server->mode;
@@ -1122,6 +1164,9 @@ esp_err_t ac_get_device_info_by_index(uint8_t index, ac_device_info_t *device_in
     device_info->addr = server->addr;
     device_info->is_online = server->is_online;
     device_info->is_configured = server->is_configured;
+    device_info->is_filtered = server->is_filtered;
+    device_info->is_manually_disconnected = server->is_manually_disconnected;
+    device_info->is_blacklisted = server->is_blacklisted;
     device_info->power_state = server->power_state;
     device_info->temperature = server->temperature;
     device_info->mode = server->mode;
@@ -1324,6 +1369,165 @@ esp_err_t ac_client_init(void)
     return err;
 }
 
+/* ==================== 设备连接管理函数 ==================== */
+
+/* 从BLE Mesh网络中移除节点 */
+static esp_err_t _remove_node_from_network(uint16_t device_addr) {
+    esp_err_t err;
+    
+    ESP_LOGI(TAG, "Removing node 0x%04x from BLE Mesh network", device_addr);
+    
+    // 从BLE Mesh网络中删除节点
+    err = esp_ble_mesh_provisioner_delete_node_with_addr(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to delete node 0x%04x from network: %s", device_addr, esp_err_to_name(err));
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Successfully removed node 0x%04x from BLE Mesh network", device_addr);
+    return ESP_OK;
+}
+
+/* 将设备添加到黑名单 */
+static esp_err_t _add_node_to_blacklist(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    server->is_blacklisted = true;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x added to blacklist", device_addr);
+    return ESP_OK;
+}
+
+/* 从黑名单中移除设备 */
+static esp_err_t _remove_node_from_blacklist(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    server->is_blacklisted = false;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x removed from blacklist", device_addr);
+    return ESP_OK;
+}
+
+/* 检查设备UUID是否在黑名单中 */
+static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid) {
+    if (!uuid) {
+        return false;
+    }
+    
+    for (uint8_t i = 0; i < store.num_servers; i++) {
+        if (store.servers[i].is_blacklisted && 
+            memcmp(store.servers[i].device_uuid, uuid, ESP_BLE_MESH_OCTET16_LEN) == 0) {
+            ESP_LOGW(TAG, "Device with UUID is blacklisted");
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, uuid, ESP_BLE_MESH_OCTET16_LEN, ESP_LOG_WARN);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* 检查设备地址是否在黑名单中 */
+static bool _is_device_blacklisted_by_addr(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        return false;
+    }
+    
+    return store.servers[server_idx].is_blacklisted;
+}
+
+/* 内部断开设备连接函数 */
+static esp_err_t _disconnect_device_internal(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    esp_err_t err;
+    
+    ESP_LOGI(TAG, "Disconnecting device 0x%04x from BLE Mesh network", device_addr);
+    
+    // 首先从BLE Mesh网络中移除节点
+    err = _remove_node_from_network(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to remove node from network, continuing with local disconnect");
+    }
+    
+    // 添加到黑名单
+    err = _add_node_to_blacklist(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add device to blacklist");
+        return err;
+    }
+    
+    // 标记为手动断开连接
+    server->is_manually_disconnected = true;
+    server->is_filtered = true;
+    server->is_online = false;
+    server->consecutive_timeouts = 0;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x disconnected and blacklisted", device_addr);
+    
+    // 调用设备下线回调
+    if (device_online_cb) {
+        device_online_cb(device_addr, false);
+    }
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
+/* 内部重连设备函数 */
+static esp_err_t _reconnect_device_internal(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    esp_err_t err;
+    
+    ESP_LOGI(TAG, "Preparing device 0x%04x for reconnection", device_addr);
+    
+    // 从黑名单中移除
+    err = _remove_node_from_blacklist(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to remove device from blacklist");
+        return err;
+    }
+    
+    // 取消手动断开连接标记
+    server->is_manually_disconnected = false;
+    server->is_filtered = false;
+    server->consecutive_timeouts = 0;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x removed from blacklist and ready for reconnection", device_addr);
+    ESP_LOGI(TAG, "Device needs to be re-provisioned to rejoin the network");
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
 /* ==================== 消息队列管理函数 ==================== */
 
 /* 向队列添加消息 */
@@ -1429,6 +1633,12 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
         if (server_idx == -1) {
             ESP_LOGE(TAG, "Target device 0x%04x not found in server list", msg->server_addr);
             return ESP_ERR_NOT_FOUND;
+        }
+        
+        // 检查设备是否在黑名单中
+        if (store.servers[server_idx].is_blacklisted) {
+            ESP_LOGW(TAG, "Target device 0x%04x is blacklisted, cannot send message", msg->server_addr);
+            return ESP_ERR_INVALID_STATE;
         }
         
         if (!store.servers[server_idx].is_configured) {
@@ -1577,4 +1787,126 @@ static void _process_next_message(void) {
         ESP_LOGD(TAG, "Message sent successfully, waiting for completion callback");
         // 发送成功，等待ESP_BLE_MESH_MODEL_SEND_COMP_EVT或超时事件
     }
+}
+
+/* 前向声明 - 设备连接管理函数 */
+static esp_err_t _disconnect_device_internal(uint16_t device_addr);
+static esp_err_t _reconnect_device_internal(uint16_t device_addr);
+static esp_err_t _remove_node_from_network(uint16_t device_addr);
+static esp_err_t _add_node_to_blacklist(uint16_t device_addr);
+static esp_err_t _remove_node_from_blacklist(uint16_t device_addr);
+static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid);
+static bool _is_device_blacklisted_by_addr(uint16_t device_addr);
+
+/* ==================== 设备连接管理公共API ==================== */
+
+/* 手动断开与指定设备的连接 */
+esp_err_t ac_disconnect_device(uint16_t device_addr) {
+    return _disconnect_device_internal(device_addr);
+}
+
+/* 手动重连与指定设备的连接 */
+esp_err_t ac_reconnect_device(uint16_t device_addr) {
+    return _reconnect_device_internal(device_addr);
+}
+
+/* 将设备添加到配网过滤列表 */
+esp_err_t ac_add_device_to_filter(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    server->is_filtered = true;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x added to provisioning filter", device_addr);
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
+/* 将设备从配网过滤列表中移除 */
+esp_err_t ac_remove_device_from_filter(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    server->is_filtered = false;
+    server->last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Device 0x%04x removed from provisioning filter", device_addr);
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
+/* 检查设备是否在配网过滤列表中 */
+bool ac_is_device_filtered(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        return false; // 未找到设备，认为未被过滤
+    }
+    
+    return store.servers[server_idx].is_filtered;
+}
+
+/* 检查设备是否在黑名单中 */
+bool ac_is_device_blacklisted(uint16_t device_addr) {
+    return _is_device_blacklisted_by_addr(device_addr);
+}
+
+/* 切换设备的连接状态 */
+esp_err_t ac_toggle_device_connection(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    
+    ESP_LOGI(TAG, "Toggling connection for device 0x%04x - current state: %s filtered, %s disconnected", 
+             device_addr, 
+             server->is_filtered ? "IS" : "NOT",
+             server->is_manually_disconnected ? "IS" : "NOT");
+    
+    if (server->is_manually_disconnected || server->is_filtered) {
+        // 设备当前被断开或过滤，尝试重连
+        esp_err_t err = ac_remove_device_from_filter(device_addr);
+        if (err != ESP_OK) {
+            return err;
+        }
+        
+        err = ac_reconnect_device(device_addr);
+        if (err != ESP_OK) {
+            return err;
+        }
+        
+        ESP_LOGI(TAG, "Device 0x%04x reconnection initiated", device_addr);
+    } else {
+        // 设备当前连接，断开并加入过滤
+        esp_err_t err = ac_disconnect_device(device_addr);
+        if (err != ESP_OK) {
+            return err;
+        }
+        
+        err = ac_add_device_to_filter(device_addr);
+        if (err != ESP_OK) {
+            return err;
+        }
+        
+        ESP_LOGI(TAG, "Device 0x%04x disconnected and filtered", device_addr);
+    }
+    
+    return ESP_OK;
 }

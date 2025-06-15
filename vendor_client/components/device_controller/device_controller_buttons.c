@@ -34,6 +34,7 @@ static const dc_event_t s_button_events[DC_BUTTON_MAX] = {
 // Forward declarations
 static void button_single_click_cb(void *button_handle, void *usr_data);
 static void button_double_click_cb(void *button_handle, void *usr_data);
+static void button_long_press_cb(void *button_handle, void *usr_data);
 
 // Button callback for single click
 static void button_single_click_cb(void *button_handle, void *usr_data)
@@ -66,6 +67,19 @@ static void button_double_click_cb(void *button_handle, void *usr_data)
     
     ESP_LOGD(TAG, "Button %d double click", *button_id);
     s_event_callback(DC_EVENT_CENTER_DOUBLE_CLICK, s_user_data);
+}
+
+// Button callback for long press (only for center button)
+static void button_long_press_cb(void *button_handle, void *usr_data)
+{
+    dc_button_id_t *button_id = (dc_button_id_t *)usr_data;
+    
+    if (!s_event_callback || !button_id || *button_id != DC_BUTTON_CENTER) {
+        return;
+    }
+    
+    ESP_LOGD(TAG, "Button %d long press", *button_id);
+    s_event_callback(DC_EVENT_CENTER_LONG_PRESS, s_user_data);
 }
 
 esp_err_t dc_buttons_init(void)
@@ -117,11 +131,18 @@ esp_err_t dc_buttons_init(void)
             goto cleanup;
         }
         
-        // Register double click callback only for center button
+        // Register double click and long press callbacks only for center button
         if (i == DC_BUTTON_CENTER) {
             ret = iot_button_register_cb(s_button_handles[i], BUTTON_DOUBLE_CLICK, NULL, button_double_click_cb, button_id);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to register double click callback for center button: %s", esp_err_to_name(ret));
+                free(button_id);
+                goto cleanup;
+            }
+            
+            ret = iot_button_register_cb(s_button_handles[i], BUTTON_LONG_PRESS_START, NULL, button_long_press_cb, button_id);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to register long press callback for center button: %s", esp_err_to_name(ret));
                 free(button_id);
                 goto cleanup;
             }

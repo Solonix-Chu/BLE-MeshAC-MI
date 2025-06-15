@@ -294,6 +294,26 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     change_state(DC_STATE_MENU_NAVIGATE);
                     break;
                     
+                case DC_EVENT_CENTER_LONG_PRESS:
+                    // 切换当前设备的连接状态（断开/重连）
+                    if (s_device_count > 0 && s_callbacks.param_change_cb) {
+                        ESP_LOGI(TAG, "Long press detected - toggling device connection for device %d", 
+                                s_context.current_device_idx);
+                        
+                        // 调用参数变化回调，使用特殊的"连接切换"参数
+                        // 这里我们定义一个特殊的参数值来表示切换连接状态
+                        esp_err_t ret = s_callbacks.param_change_cb(
+                            s_devices[s_context.current_device_idx].device_id,
+                            DC_PARAM_MAX, // 使用MAX作为特殊标识
+                            0xFF, // 使用0xFF作为"切换连接"的特殊值
+                            s_callbacks.user_data
+                        );
+                        if (ret != ESP_OK) {
+                            ESP_LOGW(TAG, "Device connection toggle failed: %s", esp_err_to_name(ret));
+                        }
+                    }
+                    break;
+                    
                 case DC_EVENT_UP_PRESS:
                 case DC_EVENT_LEFT_PRESS:
 #if DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
