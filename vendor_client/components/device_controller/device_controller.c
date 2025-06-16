@@ -197,7 +197,58 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
     char msg[64];
     esp_err_t ret = ESP_OK;
     
-    // Get device address for BLE mesh communication
+    // 检查是否为虚拟"All Device"群控
+    uint8_t actual_device_count = ac_get_device_count();
+    if (device_id == actual_device_count) {  // 虚拟设备的索引是实际设备数量
+        ESP_LOGI(TAG, "Processing group control command for All Device");
+        
+        // 将设备控制器参数转换为AC控制参数
+        ac_status_type_t ac_param;
+        switch (param) {
+            case DC_PARAM_POWER:
+                ac_param = AC_STATUS_POWER;
+                param_name = "Power";
+                snprintf(msg, sizeof(msg), "All Devices %s: %s", param_name, value ? "ON" : "OFF");
+                break;
+            case DC_PARAM_TEMPERATURE:
+                ac_param = AC_STATUS_TEMPERATURE;
+                param_name = "Temperature";
+                snprintf(msg, sizeof(msg), "All Devices %s: %ld°C", param_name, value);
+                break;
+            case DC_PARAM_FAN_SPEED:
+                ac_param = AC_STATUS_FAN_SPEED;
+                param_name = "Fan Speed";
+                const char *fan_names[] = {"Auto", "Low", "Medium", "High"};
+                snprintf(msg, sizeof(msg), "All Devices %s: %s", param_name, 
+                        (value >= 0 && value < 4) ? fan_names[value] : "Unknown");
+                break;
+            case DC_PARAM_MODE:
+                ac_param = AC_STATUS_MODE;
+                param_name = "Mode";
+                const char *mode_names[] = {"Cool", "Heat", "Fan", "Dry", "Auto"};
+                snprintf(msg, sizeof(msg), "All Devices %s: %s", param_name, 
+                        (value >= 0 && value < 5) ? mode_names[value] : "Unknown");
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown parameter type for group control: %d", param);
+                return ESP_ERR_INVALID_ARG;
+        }
+        
+        // 发送群控命令
+        ret = ac_send_group_command(ac_param, (uint8_t)value);
+        
+        if (ret == ESP_OK) {
+            dc_ui_integration_show_message("GROUP SET OK", 1000);
+            ESP_LOGI(TAG, "Successfully sent group command: %s", msg);
+        } else {
+            dc_ui_integration_show_message("GROUP SET ERROR", 1000);
+            ESP_LOGE(TAG, "Failed to send group command: %s (error: %s)", msg, esp_err_to_name(ret));
+        }
+        
+        return ret;
+    }
+    
+    // 处理单个设备控制
     uint16_t device_addr = get_device_addr_by_index(device_id);
     if (device_addr == ESP_BLE_MESH_ADDR_UNASSIGNED) {
         ESP_LOGE(TAG, "Invalid device index %d", device_id);
@@ -232,7 +283,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
         
         return ret;
     }
-    
+
     switch (param) {
         case DC_PARAM_POWER:
             param_name = "Power";
@@ -550,6 +601,12 @@ static void sync_all_devices_status(void)
 // Get device address by index
 static uint16_t get_device_addr_by_index(uint8_t index)
 {
+    // 检查是否为虚拟"All Device"
+    uint8_t actual_device_count = ac_get_device_count();
+    if (index == actual_device_count) {  // 虚拟设备的索引是实际设备数量
+        return ac_get_group_address();  // 返回组播地址
+    }
+    
     return ac_get_server_addr_by_index(index);
 }
 
@@ -679,6 +736,30 @@ static esp_err_t initialize_multiple_devices(void)
     
     ESP_LOGI(TAG, "Successfully initialized %d devices from AC control", actual_count);
     ESP_LOGI(TAG, "=== End Device Initialization Debug ===");
+    
+    // 添加"All Device"虚拟设备用于群控
+    if (actual_count > 0) {
+        dc_device_info_t all_device = {
+            .device_id = actual_count,  // 使用实际设备数量作为虚拟设备的索引
+            .device_name = AC_ALL_DEVICE_NAME,
+            .is_online = true,  // 虚拟设备始终在线
+            .status = {
+                .power = false,     // 默认状态
+                .temperature = 25,  // 默认温度
+                .mode = DEVICE_CONTROLLER_MODE_AUTO,
+                .fan_speed = DEVICE_CONTROLLER_FAN_SPEED_LOW
+            }
+        };
+        
+        ret = dc_state_machine_set_device_info(actual_count, &all_device);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set All Device info: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        
+        ESP_LOGI(TAG, "Added virtual device: \"%s\" for group control at index %d", AC_ALL_DEVICE_NAME, actual_count);
+    }
+    
     return ESP_OK;
 }
 

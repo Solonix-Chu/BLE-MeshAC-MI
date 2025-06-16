@@ -1,4 +1,4 @@
-set(SRCS "main.c"
+set(SRCS "test_group_control.c" "main.c"
          "board.c"
          "ac_control.c"
          "display.c")

@@ -237,19 +237,34 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
     uint8_t status_payload = 0;
     uint32_t status_opcode = 0;
     uint8_t value_received = 0;
+    bool is_multicast = false;
 
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
-        ESP_LOGI(TAG_AC_CTRL, "Received MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d, TTL=%d",
-                 param->model_operation.opcode, param->model_operation.ctx->addr,
-                 param->model_operation.ctx->recv_dst, param->model_operation.length,
-                 param->model_operation.ctx->recv_ttl);
+        // 检查是否为组播消息
+        is_multicast = (param->model_operation.ctx->recv_dst == AC_GROUP_ADDR);
+        
+        if (is_multicast) {
+            ESP_LOGI(TAG_AC_CTRL, "Received MULTICAST MSG: opcode 0x%06" PRIx32 ", src 0x%04x, group 0x%04x, len %d, TTL=%d",
+                     param->model_operation.opcode, param->model_operation.ctx->addr,
+                     param->model_operation.ctx->recv_dst, param->model_operation.length,
+                     param->model_operation.ctx->recv_ttl);
+        } else {
+            ESP_LOGI(TAG_AC_CTRL, "Received UNICAST MSG: opcode 0x%06" PRIx32 ", src 0x%04x, dst 0x%04x, len %d, TTL=%d",
+                     param->model_operation.opcode, param->model_operation.ctx->addr,
+                     param->model_operation.ctx->recv_dst, param->model_operation.length,
+                     param->model_operation.ctx->recv_ttl);
+        }
 
         switch (param->model_operation.opcode) {
             case AC_OP_SET_POWER:
                 if (param->model_operation.length == 1) {
                     value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_POWER: value %d", value_received);
+                    if (is_multicast) {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_POWER (MULTICAST): value %d", value_received);
+                    } else {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_POWER (UNICAST): value %d", value_received);
+                    }
                     err = ac_server_set_power(value_received);
                     status_payload = ac_server_get_current_power();
                     status_opcode = AC_OP_POWER_STATUS;
@@ -270,7 +285,11 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
             case AC_OP_SET_TEMPERATURE:
                 if (param->model_operation.length == 1) {
                     value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_TEMPERATURE: value %d", value_received);
+                    if (is_multicast) {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_TEMPERATURE (MULTICAST): value %d", value_received);
+                    } else {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_TEMPERATURE (UNICAST): value %d", value_received);
+                    }
                     err = ac_server_set_temperature(value_received);
                     status_payload = ac_server_get_current_temperature();
                     status_opcode = AC_OP_TEMPERATURE_STATUS;
@@ -291,7 +310,11 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
             case AC_OP_SET_MODE:
                 if (param->model_operation.length == 1) {
                     value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_MODE: value %d", value_received);
+                    if (is_multicast) {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_MODE (MULTICAST): value %d", value_received);
+                    } else {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_MODE (UNICAST): value %d", value_received);
+                    }
                     err = ac_server_set_mode(value_received);
                     status_payload = ac_server_get_current_mode();
                     status_opcode = AC_OP_MODE_STATUS;
@@ -312,7 +335,11 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
             case AC_OP_SET_FAN_SPEED:
                 if (param->model_operation.length == 1) {
                     value_received = param->model_operation.msg[0];
-                    ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_FAN_SPEED: value %d", value_received);
+                    if (is_multicast) {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_FAN_SPEED (MULTICAST): value %d", value_received);
+                    } else {
+                        ESP_LOGI(TAG_AC_CTRL, "AC_OP_SET_FAN_SPEED (UNICAST): value %d", value_received);
+                    }
                     err = ac_server_set_fan_speed(value_received);
                     status_payload = ac_server_get_current_fan_speed();
                     status_opcode = AC_OP_FAN_SPEED_STATUS;
@@ -340,21 +367,31 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                 break;
         }
 
-        if (err == ESP_OK && status_opcode != 0) {
-            ESP_LOGI(TAG_AC_CTRL, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x to 0x%04x (TTL=%d)", 
-                     status_opcode, status_payload, param->model_operation.ctx->addr, param->model_operation.ctx->send_ttl);
-            esp_err_t send_err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
-                                                                    param->model_operation.ctx,
-                                                                    status_opcode,
-                                                                    sizeof(status_payload),
-                                                                    &status_payload);
-            if (send_err) {
-                ESP_LOGE(TAG_AC_CTRL, "Failed to send status message 0x%06" PRIx32 " (err %d)", status_opcode, send_err);
+        // 组播消息处理逻辑
+        if (is_multicast) {
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG_AC_CTRL, "Multicast command processed successfully, no response sent (avoiding message storm)");
+            } else {
+                ESP_LOGE(TAG_AC_CTRL, "Error processing multicast command (err %d for opcode 0x%06" PRIx32 "), no response sent", err, param->model_operation.opcode);
             }
-        } else if (err != ESP_OK && status_opcode != 0) {
-             ESP_LOGE(TAG_AC_CTRL, "Error processing SET operation or invalid length (err %d for opcode 0x%06" PRIx32 "), not sending status.", err, param->model_operation.opcode);
-        } else if (err != ESP_OK && status_opcode == 0) { 
-            ESP_LOGE(TAG_AC_CTRL, "Error processing SET operation (err %d from ac_server_set_xxx), not sending status for opcode 0x%06" PRIx32 ".", err, param->model_operation.opcode);
+        } else {
+            // 单播消息处理逻辑（保持原有行为）
+            if (err == ESP_OK && status_opcode != 0) {
+                ESP_LOGI(TAG_AC_CTRL, "Sending Status Opcode 0x%06" PRIx32 " with payload 0x%02x to 0x%04x (TTL=%d)", 
+                         status_opcode, status_payload, param->model_operation.ctx->addr, param->model_operation.ctx->send_ttl);
+                esp_err_t send_err = esp_ble_mesh_server_model_send_msg(&vnd_models[0],
+                                                                        param->model_operation.ctx,
+                                                                        status_opcode,
+                                                                        sizeof(status_payload),
+                                                                        &status_payload);
+                if (send_err) {
+                    ESP_LOGE(TAG_AC_CTRL, "Failed to send status message 0x%06" PRIx32 " (err %d)", status_opcode, send_err);
+                }
+            } else if (err != ESP_OK && status_opcode != 0) {
+                 ESP_LOGE(TAG_AC_CTRL, "Error processing SET operation or invalid length (err %d for opcode 0x%06" PRIx32 "), not sending status.", err, param->model_operation.opcode);
+            } else if (err != ESP_OK && status_opcode == 0) { 
+                ESP_LOGE(TAG_AC_CTRL, "Error processing SET operation (err %d from ac_server_set_xxx), not sending status for opcode 0x%06" PRIx32 ".", err, param->model_operation.opcode);
+            }
         }
         break;
     case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:

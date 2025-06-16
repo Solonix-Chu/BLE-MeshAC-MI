@@ -53,6 +53,7 @@ typedef struct {
     bool is_filtered;                       /* Whether device is in provisioning filter */
     bool is_manually_disconnected;         /* Whether device was manually disconnected */
     bool is_blacklisted;                    /* Whether device is in blacklist (truly removed from network) */
+    bool is_in_group;                       /* Whether device is in multicast group */
     uint8_t consecutive_timeouts;           /* Count of consecutive send timeouts */
     uint8_t device_uuid[ESP_BLE_MESH_OCTET16_LEN]; /* Device UUID for blacklist checking */
     /* 扩展设备状态信息 */
@@ -100,6 +101,11 @@ static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, 
 static esp_err_t _dequeue_message(ac_msg_queue_item_t *msg);
 static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg);
 static void _process_next_message(void);
+
+/* 前向声明 - 组播管理函数 */
+static esp_err_t _add_device_to_group_internal(uint16_t device_addr);
+static esp_err_t _remove_device_from_group_internal(uint16_t device_addr);
+static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value);
 
 /* 定义模型操作项 */
 static esp_ble_mesh_model_op_t ac_client_op[] = {
@@ -226,6 +232,14 @@ static void _on_device_configured(uint16_t device_addr) {
     // Call device online callback
     if (device_online_cb) {
         device_online_cb(device_addr, true);
+    }
+    
+    // 自动将设备添加到组播组
+    esp_err_t group_err = _add_device_to_group_internal(device_addr);
+    if (group_err == ESP_OK) {
+        ESP_LOGI(TAG, "Device 0x%04x automatically added to multicast group", device_addr);
+    } else {
+        ESP_LOGW(TAG, "Failed to add device 0x%04x to multicast group: %s", device_addr, esp_err_to_name(group_err));
     }
     
     // Trigger status synchronization by requesting all status types
@@ -570,6 +584,7 @@ void ac_ble_mesh_restore_info(void)
         store.servers[i].is_filtered = false; // Default to not filtered
         store.servers[i].is_manually_disconnected = false; // Default to not manually disconnected
         store.servers[i].is_blacklisted = false; // Default to not blacklisted
+        store.servers[i].is_in_group = false; // Default to not in group
         store.servers[i].consecutive_timeouts = 0;
         memset(store.servers[i].device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID
         // 初始化扩展字段
@@ -659,6 +674,7 @@ void ac_add_server_addr(uint16_t addr)
         new_server->is_filtered = false; // Default to not filtered
         new_server->is_manually_disconnected = false; // Default to not manually disconnected
         new_server->is_blacklisted = false; // Default to not blacklisted
+        new_server->is_in_group = false; // Default to not in group
         new_server->consecutive_timeouts = 0;
         memset(new_server->device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID initially
         // 初始化设备状态
@@ -1141,6 +1157,7 @@ uint8_t ac_get_device_list(ac_device_info_t *device_list, uint8_t max_devices)
         device_list[i].is_filtered = server->is_filtered;
         device_list[i].is_manually_disconnected = server->is_manually_disconnected;
         device_list[i].is_blacklisted = server->is_blacklisted;
+        device_list[i].is_in_group = server->is_in_group;
         device_list[i].power_state = server->power_state;
         device_list[i].temperature = server->temperature;
         device_list[i].mode = server->mode;
@@ -1167,6 +1184,7 @@ esp_err_t ac_get_device_info_by_index(uint8_t index, ac_device_info_t *device_in
     device_info->is_filtered = server->is_filtered;
     device_info->is_manually_disconnected = server->is_manually_disconnected;
     device_info->is_blacklisted = server->is_blacklisted;
+    device_info->is_in_group = server->is_in_group;
     device_info->power_state = server->power_state;
     device_info->temperature = server->temperature;
     device_info->mode = server->mode;
@@ -1909,4 +1927,241 @@ esp_err_t ac_toggle_device_connection(uint16_t device_addr) {
     }
     
     return ESP_OK;
+}
+
+/* ==================== 组播管理函数 ==================== */
+
+/* 内部函数：将设备添加到组播组 */
+static esp_err_t _add_device_to_group_internal(uint16_t device_addr) {
+    esp_ble_mesh_client_common_param_t common = {0};
+    esp_ble_mesh_cfg_client_set_state_t set = {0};
+    esp_ble_mesh_node_t *node = NULL;
+    esp_err_t err;
+    
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    // 检查设备是否已在组播组中
+    if (store.servers[server_idx].is_in_group) {
+        ESP_LOGI(TAG, "Device 0x%04x is already in multicast group", device_addr);
+        return ESP_OK;
+    }
+    
+    // 获取节点信息
+    node = esp_ble_mesh_provisioner_get_node_with_addr(device_addr);
+    if (!node) {
+        ESP_LOGE(TAG, "Failed to get node 0x%04x info for group subscription", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ESP_LOGI(TAG, "Adding device 0x%04x to multicast group 0x%04x", device_addr, AC_GROUP_ADDR);
+    
+    // 设置组播订阅
+    _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_SUB_ADD);
+    set.model_sub_add.element_addr = device_addr;
+    set.model_sub_add.sub_addr = AC_GROUP_ADDR;
+    set.model_sub_add.model_id = MY_MODEL_ID_AC_SERVER;
+    set.model_sub_add.company_id = MY_COMPANY_ID;
+    
+    err = esp_ble_mesh_config_client_set_state(&common, &set);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add device 0x%04x to multicast group: %s", device_addr, esp_err_to_name(err));
+        return err;
+    }
+    
+    // 标记设备已在组播组中
+    store.servers[server_idx].is_in_group = true;
+    store.servers[server_idx].last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Successfully initiated group subscription for device 0x%04x", device_addr);
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
+/* 内部函数：从组播组中移除设备 */
+static esp_err_t _remove_device_from_group_internal(uint16_t device_addr) {
+    esp_ble_mesh_client_common_param_t common = {0};
+    esp_ble_mesh_cfg_client_set_state_t set = {0};
+    esp_ble_mesh_node_t *node = NULL;
+    esp_err_t err;
+    
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    // 检查设备是否在组播组中
+    if (!store.servers[server_idx].is_in_group) {
+        ESP_LOGI(TAG, "Device 0x%04x is not in multicast group", device_addr);
+        return ESP_OK;
+    }
+    
+    // 获取节点信息
+    node = esp_ble_mesh_provisioner_get_node_with_addr(device_addr);
+    if (!node) {
+        ESP_LOGE(TAG, "Failed to get node 0x%04x info for group unsubscription", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ESP_LOGI(TAG, "Removing device 0x%04x from multicast group 0x%04x", device_addr, AC_GROUP_ADDR);
+    
+    // 取消组播订阅
+    _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_SUB_DELETE);
+    set.model_sub_delete.element_addr = device_addr;
+    set.model_sub_delete.sub_addr = AC_GROUP_ADDR;
+    set.model_sub_delete.model_id = MY_MODEL_ID_AC_SERVER;
+    set.model_sub_delete.company_id = MY_COMPANY_ID;
+    
+    err = esp_ble_mesh_config_client_set_state(&common, &set);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to remove device 0x%04x from multicast group: %s", device_addr, esp_err_to_name(err));
+        return err;
+    }
+    
+    // 标记设备不在组播组中
+    store.servers[server_idx].is_in_group = false;
+    store.servers[server_idx].last_update_time = _get_current_timestamp();
+    
+    ESP_LOGI(TAG, "Successfully initiated group unsubscription for device 0x%04x", device_addr);
+    
+    // 保存状态到NVS
+    ac_ble_mesh_store_info();
+    
+    return ESP_OK;
+}
+
+/* 内部函数：发送组播消息 */
+static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value) {
+    esp_ble_mesh_client_common_param_t common = {0};
+    esp_ble_mesh_msg_ctx_t ctx = {0};
+    esp_err_t err = ESP_OK;
+    uint32_t opcode = 0;
+    uint8_t *data = NULL;
+    uint16_t length = 0;
+    uint8_t msg_data = 0;
+    
+    ESP_LOGI(TAG, "Sending group message type %d with value %d to group 0x%04x", msg_type, value, AC_GROUP_ADDR);
+    
+    // 根据消息类型设置操作码和数据
+    switch (msg_type) {
+        case AC_MSG_TYPE_SET_POWER:
+            opcode = AC_OP_SET_POWER;
+            msg_data = (value <= AC_POWER_ON) ? value : AC_POWER_OFF;
+            data = &msg_data;
+            length = 1;
+            break;
+        case AC_MSG_TYPE_SET_TEMPERATURE:
+            opcode = AC_OP_SET_TEMPERATURE;
+            msg_data = (value < AC_TEMP_MIN) ? AC_TEMP_MIN : 
+                      (value > AC_TEMP_MAX) ? AC_TEMP_MAX : value;
+            data = &msg_data;
+            length = 1;
+            break;
+        case AC_MSG_TYPE_SET_MODE:
+            opcode = AC_OP_SET_MODE;
+            msg_data = (value > AC_MODE_AUTO) ? AC_MODE_AUTO : value;
+            data = &msg_data;
+            length = 1;
+            break;
+        case AC_MSG_TYPE_SET_FAN_SPEED:
+            opcode = AC_OP_SET_FAN_SPEED;
+            msg_data = (value > AC_FAN_SPEED_HIGH) ? AC_FAN_SPEED_LOW : value;
+            data = &msg_data;
+            length = 1;
+            break;
+        default:
+            ESP_LOGE(TAG, "Unsupported group message type: %d", msg_type);
+            return ESP_ERR_INVALID_ARG;
+    }
+    
+    // 设置组播消息参数
+    set_msg_common(&common, AC_GROUP_ADDR, opcode);
+    ctx.net_idx = common.ctx.net_idx;
+    ctx.app_idx = common.ctx.app_idx;
+    ctx.addr = AC_GROUP_ADDR; // 使用组播地址
+    ctx.send_ttl = common.ctx.send_ttl;
+    
+    ESP_LOGI(TAG, "Sending group command: opcode 0x%06" PRIx32 " to group 0x%04x", opcode, AC_GROUP_ADDR);
+    
+    // 发送组播消息
+    err = esp_ble_mesh_client_model_send_msg(ac_client.model, &ctx, opcode,
+                                           length, data, common.msg_timeout, false, 
+                                           MSG_ROLE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send group message: %s (0x%d)", esp_err_to_name(err), err);
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Successfully sent group message type %d to group 0x%04x", msg_type, AC_GROUP_ADDR);
+    return ESP_OK;
+}
+
+/* ==================== 组播控制公共API ==================== */
+
+/* 将设备添加到组播组 */
+esp_err_t ac_add_device_to_group(uint16_t device_addr) {
+    return _add_device_to_group_internal(device_addr);
+}
+
+/* 从组播组中移除设备 */
+esp_err_t ac_remove_device_from_group(uint16_t device_addr) {
+    return _remove_device_from_group_internal(device_addr);
+}
+
+/* 向组播地址发送控制指令（群控） */
+esp_err_t ac_send_group_command(ac_status_type_t command_type, uint8_t value) {
+    ac_msg_type_t msg_type;
+    
+    // 将状态类型转换为消息类型
+    switch (command_type) {
+        case AC_STATUS_POWER:
+            msg_type = AC_MSG_TYPE_SET_POWER;
+            break;
+        case AC_STATUS_TEMPERATURE:
+            msg_type = AC_MSG_TYPE_SET_TEMPERATURE;
+            break;
+        case AC_STATUS_MODE:
+            msg_type = AC_MSG_TYPE_SET_MODE;
+            break;
+        case AC_STATUS_FAN_SPEED:
+            msg_type = AC_MSG_TYPE_SET_FAN_SPEED;
+            break;
+        default:
+            ESP_LOGE(TAG, "Invalid command type for group control: %d", command_type);
+            return ESP_ERR_INVALID_ARG;
+    }
+    
+    ESP_LOGI(TAG, "Sending group command type %d with value %d", command_type, value);
+    
+    // 直接发送组播消息，不使用队列（组播消息通常不需要响应）
+    esp_err_t err = _send_group_message(msg_type, value);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send group command: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Group command sent successfully");
+    return ESP_OK;
+}
+
+/* 获取组播地址 */
+uint16_t ac_get_group_address(void) {
+    return AC_GROUP_ADDR;
+}
+
+/* 检查设备是否在组播组中 */
+bool ac_is_device_in_group(uint16_t device_addr) {
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        return false; // 未找到设备，认为不在组播组中
+    }
+    
+    return store.servers[server_idx].is_in_group;
 }

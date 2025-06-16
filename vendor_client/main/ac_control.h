@@ -12,6 +12,10 @@ extern "C" {
 #include <stdbool.h>
 #include "esp_ble_mesh_defs.h" // Added for BLE types
 
+/* ==================== 组播控制相关定义 ==================== */
+#define AC_ALL_DEVICE_ID        0xFF       /* 虚拟"All Device"设备ID */
+#define AC_ALL_DEVICE_NAME      "All Device" /* 虚拟设备名称 */
+
 /* ==================== 消息队列相关定义 ==================== */
 #define AC_MSG_QUEUE_SIZE 16  /* 消息队列最大长度 */
 
@@ -78,6 +82,7 @@ typedef struct {
     bool is_filtered;           /* 是否被过滤（禁止重连） */
     bool is_manually_disconnected; /* 是否手动断开连接 */
     bool is_blacklisted;        /* 是否在黑名单中（真正从网络移除） */
+    bool is_in_group;           /* 是否在组播组中 */
     uint8_t power_state;        /* 电源状态 (0:关, 1:开) */
     uint8_t temperature;        /* 设定温度 */
     uint8_t mode;               /* 运行模式 */
@@ -381,6 +386,48 @@ bool ac_is_device_blacklisted(uint16_t device_addr);
  * @return esp_err_t ESP_OK成功，其他值失败
  */
 esp_err_t ac_toggle_device_connection(uint16_t device_addr);
+
+/* ==================== 组播控制API ==================== */
+
+/**
+ * @brief 将设备添加到组播组
+ * 
+ * @param device_addr 设备地址
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_add_device_to_group(uint16_t device_addr);
+
+/**
+ * @brief 从组播组中移除设备
+ * 
+ * @param device_addr 设备地址
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_remove_device_from_group(uint16_t device_addr);
+
+/**
+ * @brief 向组播地址发送控制指令（群控）
+ * 
+ * @param command_type 控制类型
+ * @param value 控制值
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_send_group_command(ac_status_type_t command_type, uint8_t value);
+
+/**
+ * @brief 获取组播地址
+ * 
+ * @return uint16_t 组播地址
+ */
+uint16_t ac_get_group_address(void);
+
+/**
+ * @brief 检查设备是否在组播组中
+ * 
+ * @param device_addr 设备地址
+ * @return true 设备在组播组中，false 设备不在组播组中
+ */
+bool ac_is_device_in_group(uint16_t device_addr);
 
 /* ==================== 使用示例 ==================== */
 /*
