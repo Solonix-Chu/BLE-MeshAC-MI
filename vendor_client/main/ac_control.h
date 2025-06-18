@@ -30,6 +30,7 @@ typedef enum {
     AC_MSG_TYPE_SET_FAN_SPEED,
     AC_MSG_TYPE_GET_FAN_SPEED,
     AC_MSG_TYPE_HEARTBEAT_ACK,  /* 新增：心跳ACK类型 */
+    AC_MSG_TYPE_DISCONNECT_NOTIFY,  /* 新增：断开连接通知 */
 } ac_msg_type_t;
 
 /* 消息队列项结构 */
@@ -428,6 +429,38 @@ uint16_t ac_get_group_address(void);
  * @return true 设备在组播组中，false 设备不在组播组中
  */
 bool ac_is_device_in_group(uint16_t device_addr);
+
+/* ==================== 设备删除和网络管理API ==================== */
+
+/**
+ * @brief 发送断开连接通知给指定设备
+ * 
+ * @param device_addr 设备地址
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_send_disconnect_notify(uint16_t device_addr);
+
+/**
+ * @brief 完全删除设备（发送通知 + 从网络移除 + key refresh）
+ * 
+ * @param device_addr 设备地址
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_remove_device_completely(uint16_t device_addr);
+
+/**
+ * @brief 执行网络key refresh操作
+ * 
+ * @return esp_err_t ESP_OK成功，其他值失败
+ */
+esp_err_t ac_perform_key_refresh(void);
+
+/**
+ * @brief 检查是否正在进行key refresh
+ * 
+ * @return true 正在进行，false 未进行
+ */
+bool ac_is_key_refresh_in_progress(void);
 
 /* ==================== 使用示例 ==================== */
 /*

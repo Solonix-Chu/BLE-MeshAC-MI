@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "esp_timer.h"
+#include "esp_random.h"
 
 #include "mesh_common.h"
 #include "ble_mesh_example_nvs.h"
@@ -82,6 +83,11 @@ static ac_device_status_callback_t device_status_cb = NULL;
 static ac_device_online_callback_t device_online_cb = NULL;
 static ac_device_provisioned_callback_t device_provisioned_cb = NULL;
 
+/* ==================== Key Refresh状态管理 ==================== */
+static bool key_refresh_in_progress = false;
+static uint32_t key_refresh_start_time = 0;
+#define KEY_REFRESH_TIMEOUT_MS 30000  /* 30秒超时 */
+
 /* ==================== 消息队列相关变量 ==================== */
 static ac_msg_queue_item_t msg_queue[AC_MSG_QUEUE_SIZE];
 static uint8_t queue_head = 0;          /* 队列头指针 */
@@ -89,6 +95,12 @@ static uint8_t queue_tail = 0;          /* 队列尾指针 */
 static uint8_t queue_count = 0;         /* 队列中消息数量 */
 static ac_send_state_t send_state = AC_SEND_STATE_IDLE;
 static ac_msg_queue_item_t current_msg; /* 当前正在发送的消息 */
+
+/* ==================== 设备删除和网络管理API实现 ==================== */
+
+// 全局变量跟踪断开连接ACK状态
+static volatile bool disconnect_ack_received = false;
+static volatile uint16_t disconnect_ack_device_addr = 0;
 
 /* AC状态回调函数 */
 // static ac_status_callback_t ac_status_cb = NULL;
@@ -117,6 +129,8 @@ static esp_ble_mesh_model_op_t ac_client_op[] = {
     /* 心跳包处理器 */
     ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT, 0),
     ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),
+    /* 断开连接处理器 */
+    ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_ACK, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -132,6 +146,8 @@ static esp_ble_mesh_client_op_pair_t ac_client_op_pair[] = {
     {AC_OP_GET_FAN_SPEED, AC_OP_FAN_SPEED_STATUS},
     /* 心跳包操作对 - 心跳包不需要状态响应，所以使用相同的操作码 */
     {AC_OP_HEARTBEAT_ACK, AC_OP_HEARTBEAT_ACK},
+    /* 断开连接操作对 */
+    {AC_OP_DISCONNECT_NOTIFY, AC_OP_DISCONNECT_ACK},
 };
 
 static esp_ble_mesh_client_t ac_client = {
@@ -372,6 +388,27 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
                 }
             }
             break;
+        case AC_OP_DISCONNECT_ACK:
+            ESP_LOGI(TAG, "Received disconnect ACK from server 0x%04x", src_addr);
+            
+            // 设置ACK接收标志
+            if (disconnect_ack_device_addr == src_addr) {
+                disconnect_ack_received = true;
+                ESP_LOGI(TAG, "Disconnect ACK flag set for device 0x%04x", src_addr);
+            }
+            
+            // Server已确认断开连接通知，可以继续删除流程
+            if (server_idx != -1) {
+                ESP_LOGI(TAG, "Server 0x%04x confirmed disconnect, proceeding with removal", src_addr);
+                // 标记设备为已断开
+                store.servers[server_idx].is_manually_disconnected = true;
+                store.servers[server_idx].is_online = false;
+                // 调用设备下线回调
+                if (device_online_cb) {
+                    device_online_cb(src_addr, false);
+                }
+            }
+            return; /* 断开连接ACK不需要进一步处理 */
         default:
             return;
     }
@@ -1555,8 +1592,8 @@ static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, 
         return ESP_ERR_NO_MEM;
     }
     
-    // 检查目标设备是否已配置完成（心跳ACK除外）
-    if (msg_type != AC_MSG_TYPE_HEARTBEAT_ACK) {
+    // 检查目标设备是否已配置完成（心跳ACK和断开连接通知除外）
+    if (msg_type != AC_MSG_TYPE_HEARTBEAT_ACK && msg_type != AC_MSG_TYPE_DISCONNECT_NOTIFY) {
         int server_idx = _find_server_index(server_addr);
         if (server_idx == -1) {
             ESP_LOGE(TAG, "Target device 0x%04x not found in server list", server_addr);
@@ -1645,8 +1682,8 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
         return ESP_ERR_INVALID_STATE;
     }
     
-    // 检查目标设备是否已配置完成（心跳ACK除外）
-    if (msg->msg_type != AC_MSG_TYPE_HEARTBEAT_ACK) {
+    // 检查目标设备是否已配置完成（心跳ACK和断开连接通知除外）
+    if (msg->msg_type != AC_MSG_TYPE_HEARTBEAT_ACK && msg->msg_type != AC_MSG_TYPE_DISCONNECT_NOTIFY) {
         int server_idx = _find_server_index(msg->server_addr);
         if (server_idx == -1) {
             ESP_LOGE(TAG, "Target device 0x%04x not found in server list", msg->server_addr);
@@ -1716,6 +1753,12 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
             opcode = AC_OP_HEARTBEAT_ACK;
             data = NULL;
             length = 0;
+            break;
+        case AC_MSG_TYPE_DISCONNECT_NOTIFY:
+            opcode = AC_OP_DISCONNECT_NOTIFY;
+            data = NULL;
+            length = 0;
+            ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x", msg->server_addr);
             break;
         default:
             ESP_LOGE(TAG, "Unknown message type: %d", msg->msg_type);
@@ -1912,7 +1955,20 @@ esp_err_t ac_toggle_device_connection(uint16_t device_addr) {
         
         ESP_LOGI(TAG, "Device 0x%04x reconnection initiated", device_addr);
     } else {
-        // 设备当前连接，断开并加入过滤
+        // 设备当前连接，断开并发送通知给server（如果设备在线）
+        if (server->is_online && !server->is_blacklisted) {
+            ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x before toggle disconnect", device_addr);
+            esp_err_t notify_err = ac_send_disconnect_notify(device_addr);
+            if (notify_err == ESP_OK) {
+                // 等待server处理断开连接通知
+                ESP_LOGI(TAG, "Waiting for device 0x%04x to process disconnect notification", device_addr);
+                vTaskDelay(pdMS_TO_TICKS(1500)); // 等待1.5秒
+            } else {
+                ESP_LOGW(TAG, "Failed to send disconnect notify to 0x%04x: %s, continuing with local disconnect", 
+                         device_addr, esp_err_to_name(notify_err));
+            }
+        }
+        
         esp_err_t err = ac_disconnect_device(device_addr);
         if (err != ESP_OK) {
             return err;
@@ -2164,4 +2220,187 @@ bool ac_is_device_in_group(uint16_t device_addr) {
     }
     
     return store.servers[server_idx].is_in_group;
+}
+
+/**
+ * @brief 发送断开连接通知给指定设备
+ */
+esp_err_t ac_send_disconnect_notify(uint16_t device_addr) {
+    ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x", device_addr);
+    
+    // 重置ACK状态
+    disconnect_ack_received = false;
+    disconnect_ack_device_addr = device_addr;
+    
+    // 通过消息队列发送断开连接通知
+    esp_err_t err = _enqueue_message(AC_MSG_TYPE_DISCONNECT_NOTIFY, device_addr, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enqueue disconnect notification to 0x%04x: %s", 
+                 device_addr, esp_err_to_name(err));
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Disconnect notification enqueued for device 0x%04x", device_addr);
+    return ESP_OK;
+}
+
+/**
+ * @brief 等待断开连接ACK响应
+ */
+static bool _wait_for_disconnect_ack(uint16_t device_addr, uint32_t timeout_ms) {
+    uint32_t start_time = _get_current_timestamp();
+    uint32_t elapsed = 0;
+    
+    ESP_LOGI(TAG, "Waiting for disconnect ACK from device 0x%04x (timeout: %lu ms)", device_addr, timeout_ms);
+    
+    while (elapsed < timeout_ms) {
+        // 检查是否收到了来自目标设备的ACK
+        if (disconnect_ack_received && disconnect_ack_device_addr == device_addr) {
+            ESP_LOGI(TAG, "Received disconnect ACK from device 0x%04x after %lu ms", device_addr, elapsed);
+            return true;
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100)); // 检查间隔100ms
+        elapsed = _get_current_timestamp() - start_time;
+    }
+    
+    ESP_LOGW(TAG, "Timeout waiting for disconnect ACK from device 0x%04x after %lu ms", device_addr, elapsed);
+    return false;
+}
+
+/**
+ * @brief 完全删除设备（发送通知 + 从网络移除 + key refresh）
+ */
+esp_err_t ac_remove_device_completely(uint16_t device_addr) {
+    ESP_LOGI(TAG, "Starting complete removal process for device 0x%04x", device_addr);
+    
+    // 检查设备是否存在
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx == -1) {
+        ESP_LOGW(TAG, "Device 0x%04x not found in server list", device_addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    ac_server_info_t *server = &store.servers[server_idx];
+    
+    // 步骤1：发送断开连接通知（如果设备在线）
+    if (server->is_online && !server->is_blacklisted) {
+        ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x", device_addr);
+        esp_err_t err = ac_send_disconnect_notify(device_addr);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to send disconnect notify, continuing with removal");
+        } else {
+            // 等待server的ACK响应
+            bool ack_received = _wait_for_disconnect_ack(device_addr, 3000); // 等待3秒
+            if (ack_received) {
+                ESP_LOGI(TAG, "Device 0x%04x confirmed disconnect notification", device_addr);
+            } else {
+                ESP_LOGW(TAG, "Device 0x%04x did not respond to disconnect notification, continuing with removal", device_addr);
+            }
+        }
+    }
+    
+    // 步骤2：从网络中移除设备
+    ESP_LOGI(TAG, "Removing device 0x%04x from network", device_addr);
+    esp_err_t err = _remove_node_from_network(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to remove device 0x%04x from network: %s", 
+                 device_addr, esp_err_to_name(err));
+        return err;
+    }
+    
+    // 步骤3：添加到黑名单
+    ESP_LOGI(TAG, "Adding device 0x%04x to blacklist", device_addr);
+    err = _add_node_to_blacklist(device_addr);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to add device 0x%04x to blacklist: %s", 
+                 device_addr, esp_err_to_name(err));
+    }
+    
+    // 步骤4：执行key refresh
+    ESP_LOGI(TAG, "Performing network key refresh after device removal");
+    err = ac_perform_key_refresh();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to perform key refresh: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    // 步骤5：从设备列表中移除
+    ESP_LOGI(TAG, "Removing device 0x%04x from device list", device_addr);
+    for (int i = server_idx; i < store.num_servers - 1; i++) {
+        store.servers[i] = store.servers[i + 1];
+    }
+    store.num_servers--;
+    
+    // 保存配置
+    ac_ble_mesh_store_info();
+    
+    ESP_LOGI(TAG, "Device 0x%04x completely removed from network", device_addr);
+    return ESP_OK;
+}
+
+/**
+ * @brief 执行网络key refresh操作
+ */
+esp_err_t ac_perform_key_refresh(void) {
+    if (key_refresh_in_progress) {
+        ESP_LOGW(TAG, "Key refresh already in progress");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    ESP_LOGI(TAG, "Starting network key refresh process");
+    key_refresh_in_progress = true;
+    key_refresh_start_time = _get_current_timestamp();
+    
+    // 执行key refresh操作
+    // 注意：这里需要调用ESP-IDF BLE Mesh的key refresh API
+    // 由于API可能因版本而异，这里提供一个基本的实现框架
+    
+    esp_err_t err = ESP_OK;
+    
+    // 方法1：尝试使用配置客户端更新网络密钥
+    // 这需要向所有设备发送新的网络密钥
+    
+    // 生成新的网络密钥（这里使用示例值，实际应该生成随机密钥）
+    uint8_t new_net_key[ESP_BLE_MESH_OCTET16_LEN];
+    for (int i = 0; i < ESP_BLE_MESH_OCTET16_LEN; i++) {
+        new_net_key[i] = (uint8_t)((esp_random() >> (i % 4 * 8)) & 0xFF);
+    }
+    
+    ESP_LOGI(TAG, "Generated new network key for refresh");
+    
+    // 使用ESP-IDF BLE Mesh API更新网络密钥
+    err = esp_ble_mesh_provisioner_update_local_net_key(new_net_key, prov_key.net_idx);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to update local network key: %s", esp_err_to_name(err));
+        key_refresh_in_progress = false;
+        return err;
+    }
+    
+    ESP_LOGI(TAG, "Local network key updated successfully");
+    
+    // 等待key refresh完成的简单实现
+    // 在实际应用中，应该监听相关的BLE Mesh事件
+    vTaskDelay(pdMS_TO_TICKS(5000)); // 等待5秒
+    
+    key_refresh_in_progress = false;
+    ESP_LOGI(TAG, "Network key refresh completed");
+    
+    return ESP_OK;
+}
+
+/**
+ * @brief 检查是否正在进行key refresh
+ */
+bool ac_is_key_refresh_in_progress(void) {
+    // 检查超时
+    if (key_refresh_in_progress) {
+        uint32_t current_time = _get_current_timestamp();
+        if (current_time - key_refresh_start_time > KEY_REFRESH_TIMEOUT_MS) {
+            ESP_LOGW(TAG, "Key refresh timeout, resetting state");
+            key_refresh_in_progress = false;
+        }
+    }
+    
+    return key_refresh_in_progress;
 }

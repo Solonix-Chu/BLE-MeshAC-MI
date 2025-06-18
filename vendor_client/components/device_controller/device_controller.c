@@ -255,7 +255,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
         return ESP_ERR_INVALID_ARG;
     }
     
-    // 检查是否为连接切换请求
+    // 检查是否为设备删除或连接切换请求
     if (param == DC_PARAM_MAX && value == 0xFF) {
         ESP_LOGI(TAG, "Processing device connection toggle for device 0x%04X", device_addr);
         
@@ -279,6 +279,28 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
         } else {
             dc_ui_integration_show_message("TOGGLE FAILED", 1000);
             ESP_LOGE(TAG, "Failed to toggle device 0x%04X connection: %s", device_addr, esp_err_to_name(ret));
+        }
+        
+        return ret;
+    }
+    
+    // 检查是否为完全删除设备请求（长按删除）
+    if (param == DC_PARAM_MAX && value == 0xFE) {
+        ESP_LOGI(TAG, "Processing complete device removal for device 0x%04X", device_addr);
+        dc_ui_integration_show_message("REMOVING DEVICE...", 3000);
+        
+        // 使用完整删除流程：发送断开连接通知 + 从网络移除 + key refresh
+        ret = ac_remove_device_completely(device_addr);
+        
+        if (ret == ESP_OK) {
+            dc_ui_integration_show_message("DEVICE REMOVED", 2000);
+            ESP_LOGI(TAG, "Device 0x%04X completely removed from network", device_addr);
+            
+            // 刷新设备列表，移除已删除的设备
+            sync_device_info_from_ac_control();
+        } else {
+            dc_ui_integration_show_message("REMOVE FAILED", 1000);
+            ESP_LOGE(TAG, "Failed to completely remove device 0x%04X: %s", device_addr, esp_err_to_name(ret));
         }
         
         return ret;

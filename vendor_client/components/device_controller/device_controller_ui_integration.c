@@ -51,12 +51,29 @@ static void boot_timer_callback(void *arg)
     }
 }
 
+// 安全的消息删除回调函数，通过LVGL异步调用执行
+static void safe_message_delete_callback(void *user_data)
+{
+    if (s_ui_state.message_label) {
+        if (lv_obj_is_valid(s_ui_state.message_label)) {
+            ESP_LOGD(TAG, "Safely deleting message label via async call");
+            lv_obj_del(s_ui_state.message_label);
+        } else {
+            ESP_LOGW(TAG, "Message label is no longer valid during async deletion");
+        }
+        s_ui_state.message_label = NULL;
+    }
+}
+
 // Message timer callback - hide temporary message
 static void message_timer_callback(void *arg)
 {
+    // 使用LVGL异步调用确保在LVGL任务上下文中执行UI操作
+    // 这样可以避免从定时器回调中直接操作UI对象的线程安全问题
     if (s_ui_state.message_label) {
-        lv_obj_del(s_ui_state.message_label);
-        s_ui_state.message_label = NULL;
+        ESP_LOGD(TAG, "Scheduling message label deletion via async call");
+        // 使用LVGL的异步调用机制，确保UI操作在正确的上下文中执行
+        lv_async_call(safe_message_delete_callback, NULL);
     }
 }
 
@@ -771,14 +788,28 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
         return ESP_ERR_INVALID_ARG;
     }
     
+    // 先停止现有的消息定时器，避免竞态条件
+    if (s_ui_state.message_timer) {
+        esp_timer_stop(s_ui_state.message_timer);
+        esp_timer_delete(s_ui_state.message_timer);
+        s_ui_state.message_timer = NULL;
+    }
+    
     // Remove existing message if any
     if (s_ui_state.message_label) {
-        lv_obj_del(s_ui_state.message_label);
+        if (lv_obj_is_valid(s_ui_state.message_label)) {
+            lv_obj_del(s_ui_state.message_label);
+        }
         s_ui_state.message_label = NULL;
     }
     
     // Create message label overlay
     s_ui_state.message_label = lv_label_create(lv_scr_act());
+    if (!s_ui_state.message_label) {
+        ESP_LOGE(TAG, "Failed to create message label");
+        return ESP_ERR_NO_MEM;
+    }
+    
     lv_label_set_text(s_ui_state.message_label, message);
     lv_obj_set_style_text_color(s_ui_state.message_label, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_color(s_ui_state.message_label, lv_color_hex(0x000000), 0);
@@ -793,14 +824,16 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
             .name = "message_timer"
         };
         
-        if (s_ui_state.message_timer) {
-            esp_timer_stop(s_ui_state.message_timer);
-            esp_timer_delete(s_ui_state.message_timer);
-        }
-        
         esp_err_t ret = esp_timer_create(&timer_args, &s_ui_state.message_timer);
         if (ret == ESP_OK) {
-            esp_timer_start_once(s_ui_state.message_timer, duration_ms * 1000);
+            ret = esp_timer_start_once(s_ui_state.message_timer, duration_ms * 1000);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to start message timer: %s", esp_err_to_name(ret));
+                esp_timer_delete(s_ui_state.message_timer);
+                s_ui_state.message_timer = NULL;
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to create message timer: %s", esp_err_to_name(ret));
         }
     }
     
@@ -997,7 +1030,10 @@ esp_err_t dc_ui_integration_deinit(void)
     
     // Clean up message label
     if (s_ui_state.message_label) {
-        lv_obj_del(s_ui_state.message_label);
+        if (lv_obj_is_valid(s_ui_state.message_label)) {
+            lv_obj_del(s_ui_state.message_label);
+        }
+        s_ui_state.message_label = NULL;
     }
     
     memset(&s_ui_state, 0, sizeof(s_ui_state));

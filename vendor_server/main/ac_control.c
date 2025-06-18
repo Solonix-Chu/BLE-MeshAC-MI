@@ -84,6 +84,8 @@ static struct {
 /* 设备Mesh地址 */
 static uint16_t device_mesh_addr = 0;
 
+static void ac_server_restart_callback(void* arg);
+
 /* 格式化设备名称 */
 static void update_device_name_display(uint16_t addr)
 {
@@ -104,6 +106,7 @@ esp_ble_mesh_model_op_t ac_server_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_FAN_SPEED, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_GET_FAN_SPEED, 0),
     ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_NOTIFY, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -361,6 +364,45 @@ static void example_ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event
                 ESP_LOGI(TAG_AC_CTRL, "AC_OP_HEARTBEAT_ACK received");
                 ac_server_handle_heartbeat_ack();
                 status_opcode = 0;
+                break;
+            case AC_OP_DISCONNECT_NOTIFY:
+                ESP_LOGI(TAG_AC_CTRL, "AC_OP_DISCONNECT_NOTIFY received from client 0x%04x", param->model_operation.ctx->addr);
+                ESP_LOGI(TAG_AC_CTRL, "Client is requesting disconnection, preparing for restart...");
+                
+                // 发送断开连接ACK确认
+                status_payload = 0;
+                status_opcode = AC_OP_DISCONNECT_ACK;
+                
+                // 停止心跳包机制
+                esp_err_t stop_err = ac_server_stop_heartbeat();
+                if (stop_err != ESP_OK) {
+                    ESP_LOGW(TAG_AC_CTRL, "Failed to stop heartbeat (err %d)", stop_err);
+                }
+                
+                // 清除连接状态
+                heartbeat_state.is_connected = false;
+                heartbeat_state.client_addr = 0;
+                
+                // 设置LED状态为准备重启
+                board_led_operation(LED_STATE_ERROR);
+                
+                // 启动延迟重启定时器（在发送ACK之后执行）
+                ESP_LOGI(TAG_AC_CTRL, "Scheduling system restart in 3 seconds...");
+                
+                // 使用一次性定时器来执行重启
+                esp_timer_handle_t restart_timer;
+                esp_timer_create_args_t restart_timer_args = {
+                    .callback = ac_server_restart_callback,
+                    .name = "restart_timer",
+                    .arg = NULL
+                };
+                
+                esp_err_t timer_err = esp_timer_create(&restart_timer_args, &restart_timer);
+                if (timer_err == ESP_OK) {
+                    esp_timer_start_once(restart_timer, 3000000); // 3秒后重启
+                } else {
+                    ESP_LOGE(TAG_AC_CTRL, "Failed to create restart timer (err %d)", timer_err);
+                }
                 break;
             default:
                 ESP_LOGW(TAG_AC_CTRL, "Unknown opcode 0x%06" PRIx32, param->model_operation.opcode);
@@ -1017,4 +1059,36 @@ esp_err_t ac_server_clear_state_from_flash(void)
 uint16_t ac_server_get_device_addr(void)
 {
     return device_mesh_addr;
+}
+
+/**
+ * @brief 延迟重启回调函数
+ * 
+ * 在收到断开连接通知后延迟执行重启，确保ACK响应已发送
+ */
+static void ac_server_restart_callback(void* arg)
+{
+    ESP_LOGI(TAG_AC_CTRL, "Executing delayed restart due to disconnect notification");
+    
+    // 清除NVS中的状态（可选）
+    esp_err_t clear_err = ac_server_clear_state_from_flash();
+    if (clear_err != ESP_OK) {
+        ESP_LOGW(TAG_AC_CTRL, "Failed to clear state from flash before restart (err %d)", clear_err);
+    }
+    
+    // 清除BLE Mesh配置，准备重新配网
+    ESP_LOGI(TAG_AC_CTRL, "Clearing BLE Mesh provisioning data and restarting...");
+    
+    // 重置BLE Mesh配网状态
+    esp_err_t reset_err = esp_ble_mesh_node_local_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG_AC_CTRL, "Failed to reset BLE Mesh node (err %d)", reset_err);
+    }
+    
+    // 等待一段时间确保重置完成
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    // 重启系统
+    ESP_LOGI(TAG_AC_CTRL, "Restarting system to re-enter provisioning mode...");
+    esp_restart();
 }
