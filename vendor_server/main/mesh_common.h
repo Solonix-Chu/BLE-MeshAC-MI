@@ -9,6 +9,9 @@ extern "C" {
 
 #include "esp_ble_mesh_defs.h"
 
+/* 心跳包功能开关 - 设置为0禁用心跳包，设置为1启用心跳包 */
+#define AC_ENABLE_HEARTBEAT 0
+
 /* 厂商ID */
 #define MY_COMPANY_ID     0x02E5
 

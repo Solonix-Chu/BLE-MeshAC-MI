@@ -267,13 +267,13 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
             bool is_filtered = ac_is_device_filtered(device_addr);
             bool is_blacklisted = ac_is_device_blacklisted(device_addr);
             if (is_blacklisted) {
-                dc_ui_integration_show_message("DEVICE REMOVED", 2000);
+                dc_ui_integration_show_message("REMOVED", 2000);
                 ESP_LOGI(TAG, "Device 0x%04X removed from network and blacklisted", device_addr);
             } else if (is_filtered) {
-                dc_ui_integration_show_message("DEVICE FILTERED", 2000);
+                dc_ui_integration_show_message("FILTERED", 2000);
                 ESP_LOGI(TAG, "Device 0x%04X filtered from provisioning", device_addr);
             } else {
-                dc_ui_integration_show_message("DEVICE RECONNECTING", 2000);
+                dc_ui_integration_show_message("RECONNECTING", 2000);
                 ESP_LOGI(TAG, "Device 0x%04X ready for reconnection", device_addr);
             }
         } else {

@@ -56,6 +56,8 @@ typedef struct {
     bool is_blacklisted;                    /* Whether device is in blacklist (truly removed from network) */
     bool is_in_group;                       /* Whether device is in multicast group */
     uint8_t consecutive_timeouts;           /* Count of consecutive send timeouts */
+    uint8_t set_cmd_timeout_count;          /* Count of consecutive set command timeouts */
+    bool is_set_cmd_unresponsive;           /* Whether device is unresponsive to set commands */
     uint8_t device_uuid[ESP_BLE_MESH_OCTET16_LEN]; /* Device UUID for blacklist checking */
     /* 扩展设备状态信息 */
     uint8_t power_state;                    /* 电源状态 */
@@ -208,7 +210,7 @@ static void set_msg_common(esp_ble_mesh_client_common_param_t *common,
     common->ctx.app_idx = prov_key.app_idx;
     common->ctx.addr = server_addr;
     common->ctx.send_ttl = MSG_SEND_TTL;
-    common->msg_timeout = 2000;
+    common->msg_timeout = 1000;
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 2, 0)
     common->msg_role = MSG_ROLE;
 #endif
@@ -227,6 +229,42 @@ static int _find_server_index(uint16_t addr) {
 /* Helper function to get current timestamp */
 static uint32_t _get_current_timestamp(void) {
     return (uint32_t)(esp_timer_get_time() / 1000); // Convert to milliseconds
+}
+
+/* Helper function to check if message type needs response */
+static bool _needs_response(ac_msg_type_t msg_type) {
+    switch (msg_type) {
+        case AC_MSG_TYPE_SET_POWER:
+        // case AC_MSG_TYPE_GET_POWER:
+        case AC_MSG_TYPE_SET_TEMPERATURE:
+        // case AC_MSG_TYPE_GET_TEMPERATURE:
+        case AC_MSG_TYPE_SET_MODE:
+        // case AC_MSG_TYPE_GET_MODE:
+        case AC_MSG_TYPE_SET_FAN_SPEED:
+        // case AC_MSG_TYPE_GET_FAN_SPEED:
+            return true;
+        case AC_MSG_TYPE_HEARTBEAT_ACK:
+        case AC_MSG_TYPE_DISCONNECT_NOTIFY:
+        case AC_MSG_TYPE_GET_POWER:
+        case AC_MSG_TYPE_GET_TEMPERATURE:
+        case AC_MSG_TYPE_GET_MODE:
+        case AC_MSG_TYPE_GET_FAN_SPEED:
+        default:
+            return false;
+    }
+}
+
+/* Helper function to check if message type is a SET command */
+static bool _is_set_command(ac_msg_type_t msg_type) {
+    switch (msg_type) {
+        case AC_MSG_TYPE_SET_POWER:
+        case AC_MSG_TYPE_SET_TEMPERATURE:
+        case AC_MSG_TYPE_SET_MODE:
+        case AC_MSG_TYPE_SET_FAN_SPEED:
+            return true;
+        default:
+            return false;
+    }
 }
 
 /* Helper function called when device configuration is completed */
@@ -276,6 +314,10 @@ static void _update_device_status(int server_idx, ac_status_type_t status_type, 
     
     ac_server_info_t *server = &store.servers[server_idx];
     server->last_update_time = _get_current_timestamp();
+    
+    // 收到状态响应，重置set命令超时计数器，并标记为响应正常
+    server->set_cmd_timeout_count = 0;
+    server->is_set_cmd_unresponsive = false;
     
     switch (status_type) {
         case AC_STATUS_POWER:
@@ -328,6 +370,10 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
         if (!was_online) {
             ESP_LOGI(TAG, "Server 0x%04x is back online.", src_addr);
             server->is_online = true;
+            // 设备重新上线，重置所有超时计数器
+            server->consecutive_timeouts = 0;
+            server->set_cmd_timeout_count = 0;
+            server->is_set_cmd_unresponsive = false;
             // 调用设备上线回调
             if (device_online_cb) {
                 device_online_cb(src_addr, true);
@@ -458,22 +504,48 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
             
             int timed_out_server_idx = _find_server_index(param->client_send_timeout.ctx->addr);
             if (timed_out_server_idx != -1) {
-                store.servers[timed_out_server_idx].consecutive_timeouts++;
-                ESP_LOGI(TAG, "Server 0x%04x timeout count: %u", 
-                         store.servers[timed_out_server_idx].addr, 
-                         store.servers[timed_out_server_idx].consecutive_timeouts);
-                if (store.servers[timed_out_server_idx].consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
-                    if (store.servers[timed_out_server_idx].is_online) {
+                ac_server_info_t *server = &store.servers[timed_out_server_idx];
+                server->consecutive_timeouts++;
+                
+                // 判断当前消息是否为set命令
+                bool is_set_cmd = false;
+                if (send_state == AC_SEND_STATE_SENDING) {
+                    is_set_cmd = _is_set_command(current_msg.msg_type);
+                }
+                
+                if (is_set_cmd) {
+                    // Set命令超时处理
+                    server->set_cmd_timeout_count++;
+                    ESP_LOGW(TAG, "Set command timeout for server 0x%04x, count: %u", 
+                             server->addr, server->set_cmd_timeout_count);
+                    
+                    if (server->set_cmd_timeout_count >= 2) {
+                        if (!server->is_set_cmd_unresponsive) {
+                            ESP_LOGW(TAG, "Server 0x%04x marked as SET command unresponsive (timeouts: %u)", 
+                                     server->addr, server->set_cmd_timeout_count);
+                            server->is_set_cmd_unresponsive = true;
+                            // 调用设备状态变化回调，通知UI更新为空心图标
+                            if (device_online_cb) {
+                                device_online_cb(server->addr, false);
+                            }
+                        }
+                    }
+                } else {
+                    // Get命令或其他命令的超时处理保持原逻辑
+                    ESP_LOGD(TAG, "Server 0x%04x general timeout count: %u", 
+                             server->addr, server->consecutive_timeouts);
+                }
+                
+                // 一般超时处理（所有命令类型）
+                if (server->consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+                    if (server->is_online) {
                          ESP_LOGW(TAG, "Server 0x%04x is now OFFLINE (timeouts: %u).", 
-                                 store.servers[timed_out_server_idx].addr,
-                                 store.servers[timed_out_server_idx].consecutive_timeouts);
-                        store.servers[timed_out_server_idx].is_online = false;
+                                 server->addr, server->consecutive_timeouts);
+                        server->is_online = false;
                         // 调用设备下线回调
                         if (device_online_cb) {
-                            device_online_cb(store.servers[timed_out_server_idx].addr, false);
+                            device_online_cb(server->addr, false);
                         }
-                        // Optionally, you might want to reset consecutive_timeouts here or keep it
-                        // to indicate it went offline due to N timeouts. For now, let's keep it.
                     }
                 }
             }
@@ -623,6 +695,8 @@ void ac_ble_mesh_restore_info(void)
         store.servers[i].is_blacklisted = false; // Default to not blacklisted
         store.servers[i].is_in_group = false; // Default to not in group
         store.servers[i].consecutive_timeouts = 0;
+        store.servers[i].set_cmd_timeout_count = 0;
+        store.servers[i].is_set_cmd_unresponsive = false;
         memset(store.servers[i].device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID
         // 初始化扩展字段
         store.servers[i].power_state = AC_POWER_OFF;
@@ -648,6 +722,8 @@ void ac_ble_mesh_restore_info(void)
             store.servers[i].is_online = false;
             store.servers[i].is_configured = false; // Reset configuration status after restart
             store.servers[i].consecutive_timeouts = 0;
+            store.servers[i].set_cmd_timeout_count = 0;
+            store.servers[i].is_set_cmd_unresponsive = false;
             // 如果设备名称为空，设置默认名称
             if (strlen(store.servers[i].device_name) == 0) {
                 snprintf(store.servers[i].device_name, sizeof(store.servers[i].device_name), "AC_%04X", store.servers[i].addr);
@@ -713,6 +789,8 @@ void ac_add_server_addr(uint16_t addr)
         new_server->is_blacklisted = false; // Default to not blacklisted
         new_server->is_in_group = false; // Default to not in group
         new_server->consecutive_timeouts = 0;
+        new_server->set_cmd_timeout_count = 0;
+        new_server->is_set_cmd_unresponsive = false;
         memset(new_server->device_uuid, 0, ESP_BLE_MESH_OCTET16_LEN); // Clear UUID initially
         // 初始化设备状态
         new_server->power_state = AC_POWER_OFF;
@@ -760,6 +838,19 @@ bool ac_is_server_online(uint16_t server_addr)
     }
     ESP_LOGW(TAG, "Server 0x%04x not found in managed list for online check.", server_addr);
     return false; // Server not found, so not online in our list
+}
+
+/* 检查设备是否对set命令响应正常（用于UI图标显示） */
+bool ac_is_device_set_cmd_responsive(uint16_t device_addr)
+{
+    int server_idx = _find_server_index(device_addr);
+    if (server_idx != -1) {
+        ac_server_info_t *server = &store.servers[server_idx];
+        // 设备在线且配置完成且对set命令响应正常
+        return server->is_online && server->is_configured && !server->is_set_cmd_unresponsive;
+    }
+    ESP_LOGW(TAG, "Device 0x%04x not found in managed list for responsiveness check.", device_addr);
+    return false;
 }
 
 // Moved BLE helper functions from main.c (internal implementations)
@@ -1195,6 +1286,7 @@ uint8_t ac_get_device_list(ac_device_info_t *device_list, uint8_t max_devices)
         device_list[i].is_manually_disconnected = server->is_manually_disconnected;
         device_list[i].is_blacklisted = server->is_blacklisted;
         device_list[i].is_in_group = server->is_in_group;
+        device_list[i].is_set_cmd_unresponsive = server->is_set_cmd_unresponsive;
         device_list[i].power_state = server->power_state;
         device_list[i].temperature = server->temperature;
         device_list[i].mode = server->mode;
@@ -1222,6 +1314,7 @@ esp_err_t ac_get_device_info_by_index(uint8_t index, ac_device_info_t *device_in
     device_info->is_manually_disconnected = server->is_manually_disconnected;
     device_info->is_blacklisted = server->is_blacklisted;
     device_info->is_in_group = server->is_in_group;
+    device_info->is_set_cmd_unresponsive = server->is_set_cmd_unresponsive;
     device_info->power_state = server->power_state;
     device_info->temperature = server->temperature;
     device_info->mode = server->mode;
@@ -1775,9 +1868,17 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
     ESP_LOGD(TAG, "Attempting to send BLE mesh message type %d to 0x%04x (opcode: 0x%06" PRIx32 ")", 
              msg->msg_type, msg->server_addr, opcode);
     
+    // 根据消息类型决定是否需要响应
+    bool need_rsp = _needs_response(msg->msg_type);
+    if (need_rsp) {
+        ESP_LOGD(TAG, "Message needs response, need_rsp=true");
+    } else {
+        ESP_LOGD(TAG, "Message doesn't need response, need_rsp=false");
+    }
+    
     // 发送消息
     err = esp_ble_mesh_client_model_send_msg(ac_client.model, &ctx, opcode,
-                                           length, data, common.msg_timeout, false, 
+                                           length, data, common.msg_timeout, need_rsp, 
                                            MSG_ROLE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send BLE mesh message type %d to 0x%04x: %s (0x%d)", 

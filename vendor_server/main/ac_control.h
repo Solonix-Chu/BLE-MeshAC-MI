@@ -163,6 +163,13 @@ void ac_server_handle_heartbeat_timeout(void);
 void ac_server_handle_heartbeat_ack(void);
 
 /**
+ * @brief Get connected client address
+ * 
+ * @return uint16_t Client address (0 if not connected)
+ */
+uint16_t ac_server_get_client_addr(void);
+
+/**
  * @brief Initialize NVS storage for AC state
  * 
  * @return ESP_OK on success

@@ -18,6 +18,7 @@ extern "C" {
 
 /* ==================== 消息队列相关定义 ==================== */
 #define AC_MSG_QUEUE_SIZE 16  /* 消息队列最大长度 */
+#define MAX_CONTROL_COMMAND_RETRIES 2  /* 控制命令最大重试次数 */
 
 /* BLE Mesh消息类型 */
 typedef enum {
@@ -39,6 +40,7 @@ typedef struct {
     uint16_t server_addr;       /* 目标服务器地址 */
     uint8_t value;              /* 消息值（对于GET类型消息无效） */
     uint32_t timestamp;         /* 消息时间戳 */
+    uint8_t retry_count;        /* 重试计数器 */
 } ac_msg_queue_item_t;
 
 /* 消息发送状态 */
@@ -84,6 +86,7 @@ typedef struct {
     bool is_manually_disconnected; /* 是否手动断开连接 */
     bool is_blacklisted;        /* 是否在黑名单中（真正从网络移除） */
     bool is_in_group;           /* 是否在组播组中 */
+    bool is_set_cmd_unresponsive; /* 是否对set命令无响应（UI显示空心图标） */
     uint8_t power_state;        /* 电源状态 (0:关, 1:开) */
     uint8_t temperature;        /* 设定温度 */
     uint8_t mode;               /* 运行模式 */
@@ -325,10 +328,10 @@ uint8_t ac_get_num_servers(void);
 uint16_t ac_get_server_addr_by_index(uint8_t index);
 
 /**
- * @brief Checks if a specific AC server is currently considered online.
- *
- * @param server_addr The unicast address of the server to check.
- * @return true if the server is considered online, false otherwise (including if server not found).
+ * @brief Check if server is online and configured
+ * 
+ * @param server_addr Server address to check
+ * @return true if server is online and configured
  */
 bool ac_is_server_online(uint16_t server_addr);
 
@@ -461,6 +464,14 @@ esp_err_t ac_perform_key_refresh(void);
  * @return true 正在进行，false 未进行
  */
 bool ac_is_key_refresh_in_progress(void);
+
+/**
+ * @brief 检查设备是否对set命令响应正常（用于UI图标显示）
+ * 
+ * @param device_addr 设备地址
+ * @return true 如果设备对set命令响应正常，false 如果无响应（显示空心图标）
+ */
+bool ac_is_device_set_cmd_responsive(uint16_t device_addr);
 
 /* ==================== 使用示例 ==================== */
 /*
