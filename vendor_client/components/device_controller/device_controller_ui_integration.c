@@ -57,7 +57,7 @@ static void safe_message_delete_callback(void *user_data)
     if (s_ui_state.message_label) {
         if (lv_obj_is_valid(s_ui_state.message_label)) {
             ESP_LOGD(TAG, "Safely deleting message label via async call");
-            lv_obj_del(s_ui_state.message_label);
+            lv_obj_del_async(s_ui_state.message_label);
         } else {
             ESP_LOGW(TAG, "Message label is no longer valid during async deletion");
         }
@@ -798,7 +798,7 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
     // Remove existing message if any
     if (s_ui_state.message_label) {
         if (lv_obj_is_valid(s_ui_state.message_label)) {
-            lv_obj_del(s_ui_state.message_label);
+            lv_obj_del_async(s_ui_state.message_label);
         }
         s_ui_state.message_label = NULL;
     }
@@ -1031,7 +1031,7 @@ esp_err_t dc_ui_integration_deinit(void)
     // Clean up message label
     if (s_ui_state.message_label) {
         if (lv_obj_is_valid(s_ui_state.message_label)) {
-            lv_obj_del(s_ui_state.message_label);
+            lv_obj_del_async(s_ui_state.message_label);
         }
         s_ui_state.message_label = NULL;
     }
