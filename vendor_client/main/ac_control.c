@@ -21,11 +21,15 @@
 
 #define TAG "AC_CLIENT"
 
+static uint16_t self_primary_addr = ESP_BLE_MESH_ADDR_UNASSIGNED;
+
+static void handle_sync_resp_message(const uint8_t *data, uint16_t len);
+
 // BLE related definitions from main.c
 #define PROV_OWN_ADDR       0x0001
 #define MSG_SEND_TTL        7
 #define MSG_TIMEOUT         0
-#define MSG_ROLE            ROLE_PROVISIONER
+#define MSG_ROLE            ROLE_NODE
 #define COMP_DATA_PAGE_0    0x00
 #define APP_KEY_IDX         0x0000
 #define APP_KEY_OCTET       0x12
@@ -40,10 +44,13 @@ static struct esp_ble_mesh_key {
     uint16_t net_idx;
     uint16_t app_idx;
     uint8_t  app_key[ESP_BLE_MESH_OCTET16_LEN];
-} prov_key;
+} prov_key = {
+    .net_idx = ESP_BLE_MESH_KEY_UNUSED,
+    .app_idx = ESP_BLE_MESH_KEY_UNUSED,
+};
 
 /* Global BLE variables from main.c */
-static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN];
+static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN] = {0xdd,0xdd};
 // static uint16_t client_primary_addr;
 
 /* Structure to hold information about each managed AC server */
@@ -107,9 +114,6 @@ static volatile uint16_t disconnect_ack_device_addr = 0;
 /* AC状态回调函数 */
 // static ac_status_callback_t ac_status_cb = NULL;
 
-/* 检查设备UUID是否在黑名单中 */
-static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid);
-
 /* 前向声明 - 消息队列管理函数 */
 static esp_err_t _enqueue_message(ac_msg_type_t msg_type, uint16_t server_addr, uint8_t value);
 static esp_err_t _dequeue_message(ac_msg_queue_item_t *msg);
@@ -117,9 +121,9 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg);
 static void _process_next_message(void);
 
 /* 前向声明 - 组播管理函数 */
-static esp_err_t _add_device_to_group_internal(uint16_t device_addr);
-static esp_err_t _remove_device_from_group_internal(uint16_t device_addr);
 static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value);
+
+static esp_err_t ac_send_sync_request(void);
 
 /* 定义模型操作项 */
 static esp_ble_mesh_model_op_t ac_client_op[] = {
@@ -133,6 +137,8 @@ static esp_ble_mesh_model_op_t ac_client_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),
     /* 断开连接处理器 */
     ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_ACK, 0),
+    /* 同步响应处理器 */
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SYNC_RESP, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -150,6 +156,8 @@ static esp_ble_mesh_client_op_pair_t ac_client_op_pair[] = {
     {AC_OP_HEARTBEAT_ACK, AC_OP_HEARTBEAT_ACK},
     /* 断开连接操作对 */
     {AC_OP_DISCONNECT_NOTIFY, AC_OP_DISCONNECT_ACK},
+    /* 同步操作对 */
+    {AC_OP_SYNC_REQ, AC_OP_SYNC_RESP},
 };
 
 static esp_ble_mesh_client_t ac_client = {
@@ -172,11 +180,8 @@ static esp_ble_mesh_cfg_srv_t config_server_cfg = {
     .default_ttl = 7,
 };
 
-static esp_ble_mesh_client_t config_client;
-
 static esp_ble_mesh_model_t root_models[] = {
     ESP_BLE_MESH_MODEL_CFG_SRV(&config_server_cfg),
-    ESP_BLE_MESH_MODEL_CFG_CLI(&config_client),
 };
 
 static esp_ble_mesh_model_t vnd_models[] = {
@@ -195,9 +200,7 @@ static esp_ble_mesh_comp_t composition = {
 };
 
 static esp_ble_mesh_prov_t provision = {
-    .prov_uuid          = dev_uuid,
-    .prov_unicast_addr  = PROV_OWN_ADDR,
-    .prov_start_address = 0x0005,
+    .uuid = dev_uuid,
 };
 
 /* 模型发送消息的通用参数 */
@@ -288,13 +291,7 @@ static void _on_device_configured(uint16_t device_addr) {
         device_online_cb(device_addr, true);
     }
     
-    // 自动将设备添加到组播组
-    esp_err_t group_err = _add_device_to_group_internal(device_addr);
-    if (group_err == ESP_OK) {
-        ESP_LOGI(TAG, "Device 0x%04x automatically added to multicast group", device_addr);
-    } else {
-        ESP_LOGW(TAG, "Failed to add device 0x%04x to multicast group: %s", device_addr, esp_err_to_name(group_err));
-    }
+    // Node 角色不在本端自动修改组播订阅，由 Provisioner 统一管理
     
     // Trigger status synchronization by requesting all status types
     ESP_LOGI(TAG, "Triggering status sync for newly configured device 0x%04x", device_addr);
@@ -354,12 +351,6 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
         ac_server_info_t *server = &store.servers[server_idx];
         bool was_online = server->is_online;
         bool was_configured = server->is_configured;
-        
-        // 检查设备是否被手动断开连接或在黑名单中
-        if (server->is_manually_disconnected || server->is_blacklisted) {
-            ESP_LOGW(TAG, "Ignoring message from disconnected/blacklisted device 0x%04x", src_addr);
-            return; // 忽略来自手动断开或黑名单设备的消息
-        }
         
         // If device can send messages, it means it's configured
         if (!was_configured) {
@@ -455,10 +446,16 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
                 }
             }
             return; /* 断开连接ACK不需要进一步处理 */
+        case AC_OP_SYNC_RESP:
+            handle_sync_resp_message(data, len);
+            return;
         default:
             return;
     }
 }
+
+// 将解析函数体放在前向声明之后（文件头部已有声明）
+// 删除重复实现，函数体在更前位置提供
 
 /* 自定义模型回调 */
 static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
@@ -557,6 +554,7 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                 _process_next_message();
             }
             break;
+
         default:
             break;
     }
@@ -854,102 +852,6 @@ bool ac_is_device_set_cmd_responsive(uint16_t device_addr)
 }
 
 // Moved BLE helper functions from main.c (internal implementations)
-static void _example_ble_mesh_set_msg_common(esp_ble_mesh_client_common_param_t *common,
-                                            esp_ble_mesh_node_t *node,
-                                            esp_ble_mesh_model_t *model, uint32_t opcode)
-{
-    common->opcode = opcode;
-    common->model = model;
-    common->ctx.net_idx = prov_key.net_idx;
-    common->ctx.app_idx = prov_key.app_idx;
-    common->ctx.addr = node->unicast_addr;
-    common->ctx.send_ttl = MSG_SEND_TTL;
-    common->msg_timeout = MSG_TIMEOUT; // Using the define from original main.c context (0)
-#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 2, 0)
-    common->msg_role = MSG_ROLE;
-#endif
-}
-
-static esp_err_t _prov_complete(uint16_t node_index, const esp_ble_mesh_octet16_t uuid,
-                               uint16_t primary_addr, uint8_t element_num, uint16_t net_idx)
-{
-    esp_ble_mesh_client_common_param_t common = {0};
-    esp_ble_mesh_cfg_client_get_state_t get = {0};
-    esp_ble_mesh_node_t *node = NULL;
-    char name[11] = {0}; 
-    esp_err_t err;
-
-    ESP_LOGI(TAG, "Node provisioned: Idx %u, PrimaryAddr 0x%04x, ElmNum %u, NetIdx 0x%03x",
-        node_index, primary_addr, element_num, net_idx);
-    ESP_LOG_BUFFER_HEX("Device UUID", uuid, ESP_BLE_MESH_OCTET16_LEN);
-
-    ac_add_server_addr(primary_addr); // Use the helper
-    
-    // 保存设备UUID以便黑名单检查
-    int server_idx = _find_server_index(primary_addr);
-    if (server_idx != -1) {
-        memcpy(store.servers[server_idx].device_uuid, uuid, ESP_BLE_MESH_OCTET16_LEN);
-        ESP_LOGI(TAG, "Saved UUID for device 0x%04x", primary_addr);
-    }
-    
-    ac_ble_mesh_store_info();      // Use the helper
-
-    sprintf(name, "%s%02u", "NODE-", node_index);
-    err = esp_ble_mesh_provisioner_set_node_name(node_index, name);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set node name (err %d)", err);
-        return err; 
-    }
-
-    node = esp_ble_mesh_provisioner_get_node_with_addr(primary_addr);
-    if (node == NULL) {
-        ESP_LOGE(TAG, "Failed to get node 0x%04x info", primary_addr);
-        return ESP_FAIL; 
-    }
-
-    _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_COMPOSITION_DATA_GET);
-    get.comp_data_get.page = COMP_DATA_PAGE_0;
-    err = esp_ble_mesh_config_client_get_state(&common, &get);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send Config Comp Data Get (err %d)", err);
-        return err; 
-    }
-
-    return ESP_OK;
-}
-
-static void _recv_unprov_adv_pkt(uint8_t dev_uuid_match[ESP_BLE_MESH_OCTET16_LEN], uint8_t addr[BD_ADDR_LEN],
-                                esp_ble_mesh_addr_type_t addr_type, uint16_t oob_info,
-                                uint8_t adv_type, esp_ble_mesh_prov_bearer_t bearer)
-{
-    esp_ble_mesh_unprov_dev_add_t add_dev = {0};
-    esp_err_t err;
-
-    ESP_LOG_BUFFER_HEX("Device Address", addr, BD_ADDR_LEN);
-    ESP_LOGI(TAG, "Address type 0x%02x, adv type 0x%02x", addr_type, adv_type);
-    ESP_LOG_BUFFER_HEX("Received Device UUID for Provisioning", dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN);
-    ESP_LOGI(TAG, "OOB info 0x%04x, bearer %s", oob_info, (bearer & ESP_BLE_MESH_PROV_ADV) ? "PB-ADV" : "PB-GATT");
-
-    // 检查设备是否在黑名单中
-    if (_is_device_blacklisted_by_uuid(dev_uuid_match)) {
-        ESP_LOGW(TAG, "Device is blacklisted, rejecting provisioning request");
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN, ESP_LOG_WARN);
-        return; // 拒绝黑名单设备的配网请求
-    }
-    
-    ESP_LOGI(TAG, "Device not in blacklist, proceeding with provisioning");
-    
-    memcpy(add_dev.addr, addr, BD_ADDR_LEN);
-    add_dev.addr_type = addr_type;
-    memcpy(add_dev.uuid, dev_uuid_match, ESP_BLE_MESH_OCTET16_LEN);
-    add_dev.oob_info = oob_info;
-    add_dev.bearer = bearer;
-    err = esp_ble_mesh_provisioner_add_unprov_dev(&add_dev,
-            ADD_DEV_RM_AFTER_PROV_FLAG | ADD_DEV_START_PROV_NOW_FLAG | ADD_DEV_FLUSHABLE_DEV_FLAG);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start provisioning device (err %d)", err);
-    }
-}
 
 static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
                                              esp_ble_mesh_prov_cb_param_t *param)
@@ -957,196 +859,42 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
     switch (event) {
     case ESP_BLE_MESH_PROV_REGISTER_COMP_EVT:
         ESP_LOGI(TAG, "ProvRegisterComp: err %d", param->prov_register_comp.err_code);
-        if(param->prov_register_comp.err_code == ESP_OK) {
-            // ac_ble_mesh_restore_info(); 
+        break;
+    case ESP_BLE_MESH_NODE_PROV_ENABLE_COMP_EVT:
+        ESP_LOGI(TAG, "NodeProvEnableComp: err %d", param->node_prov_enable_comp.err_code);
+        break;
+    case ESP_BLE_MESH_NODE_PROV_LINK_OPEN_EVT:
+        ESP_LOGI(TAG, "NodeProvLinkOpen: bearer %s",
+                 param->node_prov_link_open.bearer == ESP_BLE_MESH_PROV_ADV ? "PB-ADV" : "PB-GATT");
+        break;
+    case ESP_BLE_MESH_NODE_PROV_LINK_CLOSE_EVT:
+        ESP_LOGI(TAG, "NodeProvLinkClose: reason 0x%02x", param->node_prov_link_close.reason);
+        break;
+    case ESP_BLE_MESH_NODE_PROV_COMPLETE_EVT:
+        ESP_LOGI(TAG, "Node provisioned: addr 0x%04x, net_idx 0x%03x",
+                 param->node_prov_complete.addr, param->node_prov_complete.net_idx);
+        prov_key.net_idx = param->node_prov_complete.net_idx;
+        self_primary_addr = param->node_prov_complete.addr;
+        // Node-only：不在本地添加或绑定 AppKey，由外部 Provisioner 完成
+        break;
+    case ESP_BLE_MESH_NODE_ADD_LOCAL_APP_KEY_COMP_EVT:
+        // Node-only：不期望触发本事件，若触发仅记录日志
+        ESP_LOGW(TAG, "Unexpected local AppKey add comp: err %d, app_idx 0x%04x",
+                 param->node_add_app_key_comp.err_code, param->node_add_app_key_comp.app_idx);
+        break;
+    case ESP_BLE_MESH_NODE_BIND_APP_KEY_TO_MODEL_COMP_EVT:
+        ESP_LOGI(TAG, "Local model bind comp: err %d, elem 0x%04x, model 0x%04x, cid 0x%04x",
+                 param->node_bind_app_key_to_model_comp.err_code,
+                 param->node_bind_app_key_to_model_comp.element_addr,
+                 param->node_bind_app_key_to_model_comp.model_id,
+                 param->node_bind_app_key_to_model_comp.company_id);
+        if (param->node_bind_app_key_to_model_comp.err_code == 0 &&
+            param->node_bind_app_key_to_model_comp.model_id == MY_MODEL_ID_AC_CLIENT &&
+            param->node_bind_app_key_to_model_comp.company_id == MY_COMPANY_ID) {
+            ac_send_sync_request();
         }
-        break;
-    case ESP_BLE_MESH_PROVISIONER_PROV_ENABLE_COMP_EVT:
-        ESP_LOGI(TAG, "ProvEnableComp: err %d", param->provisioner_prov_enable_comp.err_code);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_PROV_DISABLE_COMP_EVT:
-        ESP_LOGI(TAG, "ProvDisableComp: err %d", param->provisioner_prov_disable_comp.err_code);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_RECV_UNPROV_ADV_PKT_EVT:
-        _recv_unprov_adv_pkt(param->provisioner_recv_unprov_adv_pkt.dev_uuid, param->provisioner_recv_unprov_adv_pkt.addr,
-                            param->provisioner_recv_unprov_adv_pkt.addr_type, param->provisioner_recv_unprov_adv_pkt.oob_info,
-                            param->provisioner_recv_unprov_adv_pkt.adv_type, param->provisioner_recv_unprov_adv_pkt.bearer);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_PROV_LINK_OPEN_EVT:
-        ESP_LOGI(TAG, "ProvLinkOpen: bearer %s",
-            param->provisioner_prov_link_open.bearer == ESP_BLE_MESH_PROV_ADV ? "PB-ADV" : "PB-GATT");
-        break;
-    case ESP_BLE_MESH_PROVISIONER_PROV_LINK_CLOSE_EVT:
-        ESP_LOGI(TAG, "ProvLinkClose: bearer %s, reason 0x%02x",
-            param->provisioner_prov_link_close.bearer == ESP_BLE_MESH_PROV_ADV ? "PB-ADV" : "PB-GATT", param->provisioner_prov_link_close.reason);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_PROV_COMPLETE_EVT:
-        _prov_complete(param->provisioner_prov_complete.node_idx, param->provisioner_prov_complete.device_uuid,
-                      param->provisioner_prov_complete.unicast_addr, param->provisioner_prov_complete.element_num,
-                      param->provisioner_prov_complete.netkey_idx);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_ADD_UNPROV_DEV_COMP_EVT:
-        ESP_LOGI(TAG, "AddUnprovDevComp: err %d", param->provisioner_add_unprov_dev_comp.err_code);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_SET_DEV_UUID_MATCH_COMP_EVT:
-        ESP_LOGI(TAG, "SetDevUuidMatchComp: err %d", param->provisioner_set_dev_uuid_match_comp.err_code);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_SET_NODE_NAME_COMP_EVT:
-        ESP_LOGI(TAG, "SetNodeNameComp: err %d", param->provisioner_set_node_name_comp.err_code);
-        if (param->provisioner_set_node_name_comp.err_code == 0) {
-            const char *name = esp_ble_mesh_provisioner_get_node_name(param->provisioner_set_node_name_comp.node_index);
-            if (name) {
-                ESP_LOGI(TAG, "Node %d name set: %s", param->provisioner_set_node_name_comp.node_index, name);
-            }
-        }
-        break;
-    case ESP_BLE_MESH_PROVISIONER_ADD_LOCAL_APP_KEY_COMP_EVT:
-        ESP_LOGI(TAG, "AddLocalAppKeyComp: err %d, AppIdx 0x%04x",
-                     param->provisioner_add_app_key_comp.err_code, param->provisioner_add_app_key_comp.app_idx);
-        if (param->provisioner_add_app_key_comp.err_code == 0) {
-            prov_key.app_idx = param->provisioner_add_app_key_comp.app_idx;
-            esp_err_t err = esp_ble_mesh_provisioner_bind_app_key_to_local_model(PROV_OWN_ADDR, prov_key.app_idx,
-                    MY_MODEL_ID_AC_CLIENT, MY_COMPANY_ID);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to bind AppKey to AC client model (err %d)", err);
-            }
-        }
-        break;
-    case ESP_BLE_MESH_PROVISIONER_BIND_APP_KEY_TO_MODEL_COMP_EVT:
-        ESP_LOGI(TAG, "BindAppKeyToModelComp: err %d, Addr 0x%04x, ModelID 0x%04x, AppIdx 0x%04x",
-            param->provisioner_bind_app_key_to_model_comp.err_code, param->provisioner_bind_app_key_to_model_comp.element_addr,
-            param->provisioner_bind_app_key_to_model_comp.model_id, param->provisioner_bind_app_key_to_model_comp.app_idx);
-        break;
-    case ESP_BLE_MESH_PROVISIONER_STORE_NODE_COMP_DATA_COMP_EVT:
-        ESP_LOGI(TAG, "StoreNodeCompDataComp: err %d", param->provisioner_store_node_comp_data_comp.err_code);
         break;
     default:
-        ESP_LOGW(TAG, "Unhandled provisioning event: %d", event);
-        break;
-    }
-}
-
-static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t length)
-{
-    uint16_t cid, pid, vid, crpl, feat;
-    uint16_t loc, model_id, company_id;
-    uint8_t nums, numv;
-    uint16_t offset;
-    int i;
-
-    if (length < 10) { 
-        ESP_LOGE(TAG, "Composition data too short (%d bytes)", length);
-        return;
-    }
-
-    cid = COMP_DATA_2_OCTET(data, 0);
-    pid = COMP_DATA_2_OCTET(data, 2);
-    vid = COMP_DATA_2_OCTET(data, 4);
-    crpl = COMP_DATA_2_OCTET(data, 6);
-    feat = COMP_DATA_2_OCTET(data, 8);
-    offset = 10;
-
-    ESP_LOGI(TAG, "***** Composition Data For Node *****");
-    ESP_LOGI(TAG, "* CID 0x%04x, PID 0x%04x, VID 0x%04x, CRPL 0x%04x, Feat 0x%04x *", cid, pid, vid, crpl, feat);
-    for (; offset < length; ) {
-        if (offset + 4 > length) { ESP_LOGW(TAG, "CompData: Short element header"); break; }
-        loc = COMP_DATA_2_OCTET(data, offset);
-        nums = COMP_DATA_1_OCTET(data, offset + 2);
-        numv = COMP_DATA_1_OCTET(data, offset + 3);
-        offset += 4;
-        ESP_LOGI(TAG, "* Loc 0x%04x, NumS %u, NumV %u *", loc, nums, numv);
-        for (i = 0; i < nums; i++) {
-            if (offset + 2 > length) { ESP_LOGW(TAG, "CompData: Short SIG Model list"); break; }
-            model_id = COMP_DATA_2_OCTET(data, offset);
-            ESP_LOGI(TAG, "* SIG Model ID 0x%04x *", model_id);
-            offset += 2;
-        }
-        if (i < nums) break; 
-        for (i = 0; i < numv; i++) {
-            if (offset + 4 > length) { ESP_LOGW(TAG, "CompData: Short Vendor Model list"); break; }
-            company_id = COMP_DATA_2_OCTET(data, offset);
-            model_id = COMP_DATA_2_OCTET(data, offset + 2);
-            ESP_LOGI(TAG, "* VendorModel(CID 0x%04x, MID 0x%04x) *", company_id, model_id);
-            offset += 4;
-        }
-        if (i < numv) break; 
-    }
-    ESP_LOGI(TAG, "***********************************");
-}
-
-static void _example_ble_mesh_config_client_cb(esp_ble_mesh_cfg_client_cb_event_t event,
-                                              esp_ble_mesh_cfg_client_cb_param_t *param)
-{
-    esp_ble_mesh_client_common_param_t common = {0};
-    esp_ble_mesh_cfg_client_set_state_t set = {0};
-    esp_ble_mesh_node_t *node = NULL;
-    esp_err_t err;
-
-    ESP_LOGD(TAG, "ConfigClient: evt %u, err %d, addr 0x%04x, op 0x%04" PRIx32,
-        event, param->error_code, param->params->ctx.addr, param->params->opcode);
-
-    if (param->error_code) {
-        ESP_LOGE(TAG, "ConfigClient: Op 0x%04" PRIx32 " failed (err %d)", param->params->opcode, param->error_code);
-        return;
-    }
-
-    node = esp_ble_mesh_provisioner_get_node_with_addr(param->params->ctx.addr);
-    if (!node) {
-        ESP_LOGE(TAG, "ConfigClient: Node 0x%04x not found for cb", param->params->ctx.addr);
-        return;
-    }
-
-    switch (event) {
-    case ESP_BLE_MESH_CFG_CLIENT_GET_STATE_EVT:
-        if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_COMPOSITION_DATA_GET) {
-            ESP_LOG_BUFFER_HEX("Received Comp Data", param->status_cb.comp_data_status.composition_data->data,
-                param->status_cb.comp_data_status.composition_data->len);
-            _example_ble_mesh_parse_node_comp_data(param->status_cb.comp_data_status.composition_data->data,
-                param->status_cb.comp_data_status.composition_data->len);
-            err = esp_ble_mesh_provisioner_store_node_comp_data(param->params->ctx.addr,
-                param->status_cb.comp_data_status.composition_data->data,
-                param->status_cb.comp_data_status.composition_data->len);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to store node comp data (err %d)", err);
-                break; 
-            }
-
-            _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD);
-            set.app_key_add.net_idx = prov_key.net_idx;
-            set.app_key_add.app_idx = prov_key.app_idx;
-            memcpy(set.app_key_add.app_key, prov_key.app_key, ESP_BLE_MESH_OCTET16_LEN);
-            err = esp_ble_mesh_config_client_set_state(&common, &set);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to send Config AppKey Add (err %d)", err);
-            }
-        }
-        break;
-    case ESP_BLE_MESH_CFG_CLIENT_SET_STATE_EVT:
-        if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD) {
-            _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND);
-            set.model_app_bind.element_addr = node->unicast_addr; 
-            set.model_app_bind.model_app_idx = prov_key.app_idx;
-            set.model_app_bind.model_id = MY_MODEL_ID_AC_SERVER; // Bind to AC Server model
-            set.model_app_bind.company_id = MY_COMPANY_ID;
-            err = esp_ble_mesh_config_client_set_state(&common, &set);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to send Config Model App Bind (err %d)", err);
-            }
-        } else if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND) {
-            ESP_LOGI(TAG, "Node 0x%04x provisioned & configured!", node->unicast_addr);
-            _on_device_configured(node->unicast_addr);
-        }
-        break;
-    case ESP_BLE_MESH_CFG_CLIENT_PUBLISH_EVT: 
-        ESP_LOGI(TAG, "ConfigClient: Publish from 0x%04x, op 0x%04" PRIx32, param->params->ctx.addr, param->params->opcode);
-        break;
-    case ESP_BLE_MESH_CFG_CLIENT_TIMEOUT_EVT:
-        ESP_LOGW(TAG, "ConfigClient: Timeout for 0x%04x, op 0x%04" PRIx32, param->params->ctx.addr, param->params->opcode);
-        // Add retry logic if needed, similar to main.c example if desired
-        // For brevity, not fully reimplementing retry here.
-        break;
-    default:
-        ESP_LOGE(TAG, "ConfigClient: Invalid event %u", event);
         break;
     }
 }
@@ -1156,99 +904,53 @@ static void _example_ble_mesh_config_client_cb(esp_ble_mesh_cfg_client_cb_event_
 static esp_err_t ac_ble_mesh_init(void)
 {
     esp_err_t err;
-    
-    // Initialize NVS for storing BLE Mesh info
-    // Note: Ensure ble_mesh_nvs_open is available in your project.
-    // If not, you might need to implement or copy it from ESP-IDF examples.
-    err = ble_mesh_nvs_open(&NVS_HANDLE); 
+
+    err = ble_mesh_nvs_open(&NVS_HANDLE);
     if (err != ESP_OK) {
-         ESP_LOGE(TAG, "Failed to open NVS for AC client (err %d). Ensure NVS is initialized in main.", err);
-        // Not returning here, as NVS might be optional for basic operation if no prior info exists.
-        // However, storing/restoring will fail.
+        ESP_LOGW(TAG, "NVS open failed: %d", err);
     }
 
-    // Initialize device UUID. 
-    // Using a common UUID pattern for AC devices or a board-specific one.
-    // The original main.c used ble_mesh_get_dev_uuid(dev_uuid) and then matched on {0x32, 0x10}.
-    // The original ac_control.c had dev_uuid[16] = {0xdd, 0xdd}.
-    // Let's use the {0xdd, 0xdd} for the provisioner's own UUID and for matching, as it was in ac_control.c
-    // and seems more specific to the AC client's role.
-    dev_uuid[0] = 0xDD;
-    dev_uuid[1] = 0xDD;
-    // The rest of dev_uuid can be filled by esp_ble_mesh_init based on MAC or other unique info if not fully set.
-    // For matching, we will use these first two bytes.
-    uint8_t match_uuid_prefix[2] = {0xDD, 0xDD}; // Devices to look for (e.g. AC Server)
-
-
-    // Initialize provisioning key data
-    prov_key.net_idx = ESP_BLE_MESH_KEY_PRIMARY; // Use primary network key
-    prov_key.app_idx = APP_KEY_IDX;             // Use defined AppKey index
-    memset(prov_key.app_key, APP_KEY_OCTET, sizeof(prov_key.app_key)); // Set AppKey value
-
-    // Register BLE Mesh callbacks (provisioning and config client)
+    // 注册回调
     esp_ble_mesh_register_prov_callback(_example_ble_mesh_provisioning_cb);
-    esp_ble_mesh_register_config_client_callback(_example_ble_mesh_config_client_cb);
     esp_ble_mesh_register_custom_model_callback(ac_client_model_cb);
 
-    // Initialize BLE Mesh stack
-    err = esp_ble_mesh_init(&provision, &composition); // provision.uuid uses global dev_uuid
+    // 初始化 Node 形态的 composition（保留 CFG_SRV，去掉 CFG_CLI）已在上方定义
+    err = esp_ble_mesh_init(&provision, &composition);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize BLE mesh stack (err %d)", err);
+        ESP_LOGE(TAG, "esp_ble_mesh_init failed %d", err);
         return err;
     }
 
-    // Initialize client models. The config client model is part of root_models and initialized by esp_ble_mesh_init.
-    // The vendor client model (ac_client) needs explicit initialization.
-    // vnd_models[0] is the ac_client model.
+    // 初始化 vendor client 模型并赋值
     err = esp_ble_mesh_client_model_init(&vnd_models[0]);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize AC vendor client model (err %d)", err);
+        ESP_LOGE(TAG, "vendor client init failed %d", err);
         return err;
     }
-    // Assign the initialized model pointer to the global ac_client structure
-    ac_client.model = &vnd_models[0]; 
+    ac_client.model = &vnd_models[0];
 
-    // Set the device UUID match for the provisioner to scan for specific unprovisioned devices.
-    // This uses the `match_uuid_prefix` (e.g. {0xDD,0xDD} or {0x32,0x10} from old main.c example)
-    err = esp_ble_mesh_provisioner_set_dev_uuid_match(match_uuid_prefix, sizeof(match_uuid_prefix), 0x0, false);
+    // // 启用前强制恢复为未配网状态（每次启动均未配网）
+    // {
+    //     esp_err_t reset_err = esp_ble_mesh_node_local_reset();
+    //     if (reset_err != ESP_OK) {
+    //         ESP_LOGW(TAG, "force local reset (unprovisioned) returned %d", reset_err);
+    //     } else {
+    //         ESP_LOGI(TAG, "force local reset done, node is now unprovisioned");
+    //     }
+    // }
+
+    // 启用 Node 的 PB-ADV/PB-GATT 握手
+    err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set device UUID match (err %d)", err);
+        ESP_LOGE(TAG, "node prov enable failed %d", err);
         return err;
     }
 
-    // Enable provisioning functionality (both PB-ADV and PB-GATT bearers)
-    err = esp_ble_mesh_provisioner_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable mesh provisioner (err %d)", err);
-        return err;
-    }
-
-    // Add the local AppKey to the provisioner's AppKey list.
-    err = esp_ble_mesh_provisioner_add_local_app_key(prov_key.app_key, prov_key.net_idx, prov_key.app_idx);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add local AppKey (err %d)", err);
-        // This is critical, binding to local model will fail too.
-        return err;
-    }
-    // Note: Binding of app key to the *local* ac_client model is handled in ESP_BLE_MESH_PROVISIONER_ADD_LOCAL_APP_KEY_COMP_EVT
-    // in _example_ble_mesh_provisioning_cb.
-
-    ESP_LOGI(TAG, "AC BLE Mesh Client initialized successfully.");
+    ESP_LOGI(TAG, "AC BLE Mesh Node initialized, waiting for provisioning...");
     return ESP_OK;
-} 
+}
 
 /* ==================== UI接口函数实现 ==================== */
-
-/* 注册回调函数 */
-void ac_client_register_callbacks(ac_device_status_callback_t status_cb, 
-                                 ac_device_online_callback_t online_cb,
-                                 ac_device_provisioned_callback_t provisioned_cb)
-{
-    device_status_cb = status_cb;
-    device_online_cb = online_cb;
-    device_provisioned_cb = provisioned_cb;
-    ESP_LOGI(TAG, "Callbacks registered for device status, online status, and provisioning events.");
-}
 
 /* 获取设备数量 */
 uint8_t ac_get_device_count(void)
@@ -1517,165 +1219,6 @@ esp_err_t ac_client_init(void)
     return err;
 }
 
-/* ==================== 设备连接管理函数 ==================== */
-
-/* 从BLE Mesh网络中移除节点 */
-static esp_err_t _remove_node_from_network(uint16_t device_addr) {
-    esp_err_t err;
-    
-    ESP_LOGI(TAG, "Removing node 0x%04x from BLE Mesh network", device_addr);
-    
-    // 从BLE Mesh网络中删除节点
-    err = esp_ble_mesh_provisioner_delete_node_with_addr(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to delete node 0x%04x from network: %s", device_addr, esp_err_to_name(err));
-        return err;
-    }
-    
-    ESP_LOGI(TAG, "Successfully removed node 0x%04x from BLE Mesh network", device_addr);
-    return ESP_OK;
-}
-
-/* 将设备添加到黑名单 */
-static esp_err_t _add_node_to_blacklist(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    server->is_blacklisted = true;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x added to blacklist", device_addr);
-    return ESP_OK;
-}
-
-/* 从黑名单中移除设备 */
-static esp_err_t _remove_node_from_blacklist(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    server->is_blacklisted = false;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x removed from blacklist", device_addr);
-    return ESP_OK;
-}
-
-/* 检查设备UUID是否在黑名单中 */
-static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid) {
-    if (!uuid) {
-        return false;
-    }
-    
-    for (uint8_t i = 0; i < store.num_servers; i++) {
-        if (store.servers[i].is_blacklisted && 
-            memcmp(store.servers[i].device_uuid, uuid, ESP_BLE_MESH_OCTET16_LEN) == 0) {
-            ESP_LOGW(TAG, "Device with UUID is blacklisted");
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, uuid, ESP_BLE_MESH_OCTET16_LEN, ESP_LOG_WARN);
-            return true;
-        }
-    }
-    return false;
-}
-
-/* 检查设备地址是否在黑名单中 */
-static bool _is_device_blacklisted_by_addr(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        return false;
-    }
-    
-    return store.servers[server_idx].is_blacklisted;
-}
-
-/* 内部断开设备连接函数 */
-static esp_err_t _disconnect_device_internal(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    esp_err_t err;
-    
-    ESP_LOGI(TAG, "Disconnecting device 0x%04x from BLE Mesh network", device_addr);
-    
-    // 首先从BLE Mesh网络中移除节点
-    err = _remove_node_from_network(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to remove node from network, continuing with local disconnect");
-    }
-    
-    // 添加到黑名单
-    err = _add_node_to_blacklist(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add device to blacklist");
-        return err;
-    }
-    
-    // 标记为手动断开连接
-    server->is_manually_disconnected = true;
-    server->is_filtered = true;
-    server->is_online = false;
-    server->consecutive_timeouts = 0;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x disconnected and blacklisted", device_addr);
-    
-    // 调用设备下线回调
-    if (device_online_cb) {
-        device_online_cb(device_addr, false);
-    }
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
-
-/* 内部重连设备函数 */
-static esp_err_t _reconnect_device_internal(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    esp_err_t err;
-    
-    ESP_LOGI(TAG, "Preparing device 0x%04x for reconnection", device_addr);
-    
-    // 从黑名单中移除
-    err = _remove_node_from_blacklist(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to remove device from blacklist");
-        return err;
-    }
-    
-    // 取消手动断开连接标记
-    server->is_manually_disconnected = false;
-    server->is_filtered = false;
-    server->consecutive_timeouts = 0;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x removed from blacklist and ready for reconnection", device_addr);
-    ESP_LOGI(TAG, "Device needs to be re-provisioned to rejoin the network");
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
-
 /* ==================== 消息队列管理函数 ==================== */
 
 /* 向队列添加消息 */
@@ -1865,6 +1408,12 @@ static esp_err_t _send_ble_mesh_message(const ac_msg_queue_item_t *msg) {
     ctx.addr = common.ctx.addr;
     ctx.send_ttl = common.ctx.send_ttl;
     
+    // Node-only：若外部未完成本地模型绑定或未设置有效的 AppKey/NetKey，则拒绝发送
+    if (prov_key.app_idx == ESP_BLE_MESH_KEY_UNUSED || prov_key.net_idx == ESP_BLE_MESH_KEY_UNUSED) {
+        ESP_LOGW(TAG, "Unicast send aborted: AppKey/NetKey not ready (bound by external provisioner)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     ESP_LOGD(TAG, "Attempting to send BLE mesh message type %d to 0x%04x (opcode: 0x%06" PRIx32 ")", 
              msg->msg_type, msg->server_addr, opcode);
     
@@ -1951,248 +1500,7 @@ static void _process_next_message(void) {
     }
 }
 
-/* 前向声明 - 设备连接管理函数 */
-static esp_err_t _disconnect_device_internal(uint16_t device_addr);
-static esp_err_t _reconnect_device_internal(uint16_t device_addr);
-static esp_err_t _remove_node_from_network(uint16_t device_addr);
-static esp_err_t _add_node_to_blacklist(uint16_t device_addr);
-static esp_err_t _remove_node_from_blacklist(uint16_t device_addr);
-static bool _is_device_blacklisted_by_uuid(const uint8_t *uuid);
-static bool _is_device_blacklisted_by_addr(uint16_t device_addr);
-
-/* ==================== 设备连接管理公共API ==================== */
-
-/* 手动断开与指定设备的连接 */
-esp_err_t ac_disconnect_device(uint16_t device_addr) {
-    return _disconnect_device_internal(device_addr);
-}
-
-/* 手动重连与指定设备的连接 */
-esp_err_t ac_reconnect_device(uint16_t device_addr) {
-    return _reconnect_device_internal(device_addr);
-}
-
-/* 将设备添加到配网过滤列表 */
-esp_err_t ac_add_device_to_filter(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    server->is_filtered = true;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x added to provisioning filter", device_addr);
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
-
-/* 将设备从配网过滤列表中移除 */
-esp_err_t ac_remove_device_from_filter(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    server->is_filtered = false;
-    server->last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Device 0x%04x removed from provisioning filter", device_addr);
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
-
-/* 检查设备是否在配网过滤列表中 */
-bool ac_is_device_filtered(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        return false; // 未找到设备，认为未被过滤
-    }
-    
-    return store.servers[server_idx].is_filtered;
-}
-
-/* 检查设备是否在黑名单中 */
-bool ac_is_device_blacklisted(uint16_t device_addr) {
-    return _is_device_blacklisted_by_addr(device_addr);
-}
-
-/* 切换设备的连接状态 */
-esp_err_t ac_toggle_device_connection(uint16_t device_addr) {
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    
-    ESP_LOGI(TAG, "Toggling connection for device 0x%04x - current state: %s filtered, %s disconnected", 
-             device_addr, 
-             server->is_filtered ? "IS" : "NOT",
-             server->is_manually_disconnected ? "IS" : "NOT");
-    
-    if (server->is_manually_disconnected || server->is_filtered) {
-        // 设备当前被断开或过滤，尝试重连
-        esp_err_t err = ac_remove_device_from_filter(device_addr);
-        if (err != ESP_OK) {
-            return err;
-        }
-        
-        err = ac_reconnect_device(device_addr);
-        if (err != ESP_OK) {
-            return err;
-        }
-        
-        ESP_LOGI(TAG, "Device 0x%04x reconnection initiated", device_addr);
-    } else {
-        // 设备当前连接，断开并发送通知给server（如果设备在线）
-        if (server->is_online && !server->is_blacklisted) {
-            ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x before toggle disconnect", device_addr);
-            esp_err_t notify_err = ac_send_disconnect_notify(device_addr);
-            if (notify_err == ESP_OK) {
-                // 等待server处理断开连接通知
-                ESP_LOGI(TAG, "Waiting for device 0x%04x to process disconnect notification", device_addr);
-                vTaskDelay(pdMS_TO_TICKS(1500)); // 等待1.5秒
-            } else {
-                ESP_LOGW(TAG, "Failed to send disconnect notify to 0x%04x: %s, continuing with local disconnect", 
-                         device_addr, esp_err_to_name(notify_err));
-            }
-        }
-        
-        esp_err_t err = ac_disconnect_device(device_addr);
-        if (err != ESP_OK) {
-            return err;
-        }
-        
-        err = ac_add_device_to_filter(device_addr);
-        if (err != ESP_OK) {
-            return err;
-        }
-        
-        ESP_LOGI(TAG, "Device 0x%04x disconnected and filtered", device_addr);
-    }
-    
-    return ESP_OK;
-}
-
 /* ==================== 组播管理函数 ==================== */
-
-/* 内部函数：将设备添加到组播组 */
-static esp_err_t _add_device_to_group_internal(uint16_t device_addr) {
-    esp_ble_mesh_client_common_param_t common = {0};
-    esp_ble_mesh_cfg_client_set_state_t set = {0};
-    esp_ble_mesh_node_t *node = NULL;
-    esp_err_t err;
-    
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    // 检查设备是否已在组播组中
-    if (store.servers[server_idx].is_in_group) {
-        ESP_LOGI(TAG, "Device 0x%04x is already in multicast group", device_addr);
-        return ESP_OK;
-    }
-    
-    // 获取节点信息
-    node = esp_ble_mesh_provisioner_get_node_with_addr(device_addr);
-    if (!node) {
-        ESP_LOGE(TAG, "Failed to get node 0x%04x info for group subscription", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ESP_LOGI(TAG, "Adding device 0x%04x to multicast group 0x%04x", device_addr, AC_GROUP_ADDR);
-    
-    // 设置组播订阅
-    _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_SUB_ADD);
-    set.model_sub_add.element_addr = device_addr;
-    set.model_sub_add.sub_addr = AC_GROUP_ADDR;
-    set.model_sub_add.model_id = MY_MODEL_ID_AC_SERVER;
-    set.model_sub_add.company_id = MY_COMPANY_ID;
-    
-    err = esp_ble_mesh_config_client_set_state(&common, &set);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add device 0x%04x to multicast group: %s", device_addr, esp_err_to_name(err));
-        return err;
-    }
-    
-    // 标记设备已在组播组中
-    store.servers[server_idx].is_in_group = true;
-    store.servers[server_idx].last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Successfully initiated group subscription for device 0x%04x", device_addr);
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
-
-/* 内部函数：从组播组中移除设备 */
-static esp_err_t _remove_device_from_group_internal(uint16_t device_addr) {
-    esp_ble_mesh_client_common_param_t common = {0};
-    esp_ble_mesh_cfg_client_set_state_t set = {0};
-    esp_ble_mesh_node_t *node = NULL;
-    esp_err_t err;
-    
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGE(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    // 检查设备是否在组播组中
-    if (!store.servers[server_idx].is_in_group) {
-        ESP_LOGI(TAG, "Device 0x%04x is not in multicast group", device_addr);
-        return ESP_OK;
-    }
-    
-    // 获取节点信息
-    node = esp_ble_mesh_provisioner_get_node_with_addr(device_addr);
-    if (!node) {
-        ESP_LOGE(TAG, "Failed to get node 0x%04x info for group unsubscription", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ESP_LOGI(TAG, "Removing device 0x%04x from multicast group 0x%04x", device_addr, AC_GROUP_ADDR);
-    
-    // 取消组播订阅
-    _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_SUB_DELETE);
-    set.model_sub_delete.element_addr = device_addr;
-    set.model_sub_delete.sub_addr = AC_GROUP_ADDR;
-    set.model_sub_delete.model_id = MY_MODEL_ID_AC_SERVER;
-    set.model_sub_delete.company_id = MY_COMPANY_ID;
-    
-    err = esp_ble_mesh_config_client_set_state(&common, &set);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to remove device 0x%04x from multicast group: %s", device_addr, esp_err_to_name(err));
-        return err;
-    }
-    
-    // 标记设备不在组播组中
-    store.servers[server_idx].is_in_group = false;
-    store.servers[server_idx].last_update_time = _get_current_timestamp();
-    
-    ESP_LOGI(TAG, "Successfully initiated group unsubscription for device 0x%04x", device_addr);
-    
-    // 保存状态到NVS
-    ac_ble_mesh_store_info();
-    
-    return ESP_OK;
-}
 
 /* 内部函数：发送组播消息 */
 static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value) {
@@ -2244,6 +1552,11 @@ static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value) {
     ctx.app_idx = common.ctx.app_idx;
     ctx.addr = AC_GROUP_ADDR; // 使用组播地址
     ctx.send_ttl = common.ctx.send_ttl;
+
+    if (prov_key.app_idx == ESP_BLE_MESH_KEY_UNUSED || prov_key.net_idx == ESP_BLE_MESH_KEY_UNUSED) {
+        ESP_LOGW(TAG, "Group send aborted: AppKey/NetKey not ready (bound by external provisioner)");
+        return ESP_ERR_INVALID_STATE;
+    }
     
     ESP_LOGI(TAG, "Sending group command: opcode 0x%06" PRIx32 " to group 0x%04x", opcode, AC_GROUP_ADDR);
     
@@ -2261,16 +1574,6 @@ static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value) {
 }
 
 /* ==================== 组播控制公共API ==================== */
-
-/* 将设备添加到组播组 */
-esp_err_t ac_add_device_to_group(uint16_t device_addr) {
-    return _add_device_to_group_internal(device_addr);
-}
-
-/* 从组播组中移除设备 */
-esp_err_t ac_remove_device_from_group(uint16_t device_addr) {
-    return _remove_device_from_group_internal(device_addr);
-}
 
 /* 向组播地址发送控制指令（群控） */
 esp_err_t ac_send_group_command(ac_status_type_t command_type, uint8_t value) {
@@ -2323,185 +1626,83 @@ bool ac_is_device_in_group(uint16_t device_addr) {
     return store.servers[server_idx].is_in_group;
 }
 
-/**
- * @brief 发送断开连接通知给指定设备
- */
-esp_err_t ac_send_disconnect_notify(uint16_t device_addr) {
-    ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x", device_addr);
-    
-    // 重置ACK状态
-    disconnect_ack_received = false;
-    disconnect_ack_device_addr = device_addr;
-    
-    // 通过消息队列发送断开连接通知
-    esp_err_t err = _enqueue_message(AC_MSG_TYPE_DISCONNECT_NOTIFY, device_addr, 0);
+// 发送同步请求到 Hub(0x0001)
+static esp_err_t ac_send_sync_request(void)
+{
+    const uint16_t hub_addr = 0x0001;
+    esp_ble_mesh_client_common_param_t common = {0};
+    set_msg_common(&common, hub_addr, AC_OP_SYNC_REQ);
+
+    uint8_t payload = 0; // 预留版本/保留字段
+    esp_ble_mesh_msg_ctx_t *ctx = &common.ctx;
+    uint32_t opcode = common.opcode;
+
+    esp_err_t err = esp_ble_mesh_client_model_send_msg(ac_client.model, ctx, opcode,
+                                                       sizeof(payload), &payload, MSG_TIMEOUT, true, MSG_ROLE);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enqueue disconnect notification to 0x%04x: %s", 
-                 device_addr, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to send SYNC_REQ to 0x%04x: %s", hub_addr, esp_err_to_name(err));
         return err;
     }
-    
-    ESP_LOGI(TAG, "Disconnect notification enqueued for device 0x%04x", device_addr);
+    ESP_LOGI(TAG, "SYNC_REQ sent to 0x%04x", hub_addr);
     return ESP_OK;
 }
 
-/**
- * @brief 等待断开连接ACK响应
- */
-static bool _wait_for_disconnect_ack(uint16_t device_addr, uint32_t timeout_ms) {
-    uint32_t start_time = _get_current_timestamp();
-    uint32_t elapsed = 0;
-    
-    ESP_LOGI(TAG, "Waiting for disconnect ACK from device 0x%04x (timeout: %lu ms)", device_addr, timeout_ms);
-    
-    while (elapsed < timeout_ms) {
-        // 检查是否收到了来自目标设备的ACK
-        if (disconnect_ack_received && disconnect_ack_device_addr == device_addr) {
-            ESP_LOGI(TAG, "Received disconnect ACK from device 0x%04x after %lu ms", device_addr, elapsed);
-            return true;
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(100)); // 检查间隔100ms
-        elapsed = _get_current_timestamp() - start_time;
+static void handle_sync_resp_message(const uint8_t *data, uint16_t len)
+{
+    if (data == NULL || len < 5) {
+        ESP_LOGW(TAG, "SYNC_RESP too short");
+        return;
     }
-    
-    ESP_LOGW(TAG, "Timeout waiting for disconnect ACK from device 0x%04x after %lu ms", device_addr, elapsed);
-    return false;
-}
+    uint8_t total = data[0];
+    uint8_t offset = data[1];
+    uint8_t count = data[2];
+    uint16_t group_addr = data[3] | (data[4] << 8);
+    uint8_t version = (len >= 6) ? data[5] : 0;
 
-/**
- * @brief 完全删除设备（发送通知 + 从网络移除 + key refresh）
- */
-esp_err_t ac_remove_device_completely(uint16_t device_addr) {
-    ESP_LOGI(TAG, "Starting complete removal process for device 0x%04x", device_addr);
-    
-    // 检查设备是否存在
-    int server_idx = _find_server_index(device_addr);
-    if (server_idx == -1) {
-        ESP_LOGW(TAG, "Device 0x%04x not found in server list", device_addr);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    ac_server_info_t *server = &store.servers[server_idx];
-    
-    // 步骤1：发送断开连接通知（如果设备在线）
-    if (server->is_online && !server->is_blacklisted) {
-        ESP_LOGI(TAG, "Sending disconnect notification to device 0x%04x", device_addr);
-        esp_err_t err = ac_send_disconnect_notify(device_addr);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to send disconnect notify, continuing with removal");
-        } else {
-            // 等待server的ACK响应
-            bool ack_received = _wait_for_disconnect_ack(device_addr, 3000); // 等待3秒
-            if (ack_received) {
-                ESP_LOGI(TAG, "Device 0x%04x confirmed disconnect notification", device_addr);
+    ESP_LOGI(TAG, "SYNC_RESP: total=%u offset=%u count=%u group=0x%04x ver=%u", total, offset, count, group_addr, version);
+
+    const uint16_t header_len = (len >= 6) ? 6 : 5;
+    const uint16_t rec_len = 23;
+    const uint8_t *p = data + header_len;
+    uint16_t remain = (len > header_len) ? (len - header_len) : 0;
+
+    for (uint8_t i = 0; i < count && remain >= rec_len; i++) {
+        uint16_t addr = p[0] | (p[1] << 8);
+        uint8_t flags = p[2];
+        char name[17] = {0};
+        memcpy(name, &p[3], 16);
+        uint8_t power = p[19];
+        uint8_t temperature = p[20];
+        uint8_t mode = p[21];
+        uint8_t fan = p[22];
+
+        int idx = _find_server_index(addr);
+        if (idx == -1) {
+            if (store.num_servers < MAX_AC_SERVERS) {
+                idx = store.num_servers++;
+                store.servers[idx].addr = addr;
             } else {
-                ESP_LOGW(TAG, "Device 0x%04x did not respond to disconnect notification, continuing with removal", device_addr);
+                ESP_LOGW(TAG, "Server list full, skip 0x%04x", addr);
+                p += rec_len; remain -= rec_len; continue;
             }
         }
+        ac_server_info_t *sv = &store.servers[idx];
+        sv->is_online = (flags & 0x01) != 0;
+        sv->is_in_group = (flags & 0x02) != 0;
+        sv->is_configured = true;
+        sv->power_state = power;
+        sv->temperature = temperature;
+        sv->mode = mode;
+        sv->fan_speed = fan;
+        strncpy(sv->device_name, name, sizeof(sv->device_name) - 1); sv->device_name[sizeof(sv->device_name) - 1] = '\0';
+        sv->last_update_time = _get_current_timestamp();
+
+        ESP_LOGI(TAG, "SYNC item: 0x%04x %s online=%d in_group=%d P=%u T=%u M=%u F=%u",
+                 addr, sv->device_name, sv->is_online, sv->is_in_group, power, temperature, mode, fan);
+
+        p += rec_len;
+        remain -= rec_len;
     }
-    
-    // 步骤2：从网络中移除设备
-    ESP_LOGI(TAG, "Removing device 0x%04x from network", device_addr);
-    esp_err_t err = _remove_node_from_network(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to remove device 0x%04x from network: %s", 
-                 device_addr, esp_err_to_name(err));
-        return err;
-    }
-    
-    // 步骤3：添加到黑名单
-    ESP_LOGI(TAG, "Adding device 0x%04x to blacklist", device_addr);
-    err = _add_node_to_blacklist(device_addr);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to add device 0x%04x to blacklist: %s", 
-                 device_addr, esp_err_to_name(err));
-    }
-    
-    // 步骤4：执行key refresh
-    ESP_LOGI(TAG, "Performing network key refresh after device removal");
-    err = ac_perform_key_refresh();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to perform key refresh: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // 步骤5：从设备列表中移除
-    ESP_LOGI(TAG, "Removing device 0x%04x from device list", device_addr);
-    for (int i = server_idx; i < store.num_servers - 1; i++) {
-        store.servers[i] = store.servers[i + 1];
-    }
-    store.num_servers--;
-    
-    // 保存配置
+
     ac_ble_mesh_store_info();
-    
-    ESP_LOGI(TAG, "Device 0x%04x completely removed from network", device_addr);
-    return ESP_OK;
-}
-
-/**
- * @brief 执行网络key refresh操作
- */
-esp_err_t ac_perform_key_refresh(void) {
-    if (key_refresh_in_progress) {
-        ESP_LOGW(TAG, "Key refresh already in progress");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    ESP_LOGI(TAG, "Starting network key refresh process");
-    key_refresh_in_progress = true;
-    key_refresh_start_time = _get_current_timestamp();
-    
-    // 执行key refresh操作
-    // 注意：这里需要调用ESP-IDF BLE Mesh的key refresh API
-    // 由于API可能因版本而异，这里提供一个基本的实现框架
-    
-    esp_err_t err = ESP_OK;
-    
-    // 方法1：尝试使用配置客户端更新网络密钥
-    // 这需要向所有设备发送新的网络密钥
-    
-    // 生成新的网络密钥（这里使用示例值，实际应该生成随机密钥）
-    uint8_t new_net_key[ESP_BLE_MESH_OCTET16_LEN];
-    for (int i = 0; i < ESP_BLE_MESH_OCTET16_LEN; i++) {
-        new_net_key[i] = (uint8_t)((esp_random() >> (i % 4 * 8)) & 0xFF);
-    }
-    
-    ESP_LOGI(TAG, "Generated new network key for refresh");
-    
-    // 使用ESP-IDF BLE Mesh API更新网络密钥
-    err = esp_ble_mesh_provisioner_update_local_net_key(new_net_key, prov_key.net_idx);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to update local network key: %s", esp_err_to_name(err));
-        key_refresh_in_progress = false;
-        return err;
-    }
-    
-    ESP_LOGI(TAG, "Local network key updated successfully");
-    
-    // 等待key refresh完成的简单实现
-    // 在实际应用中，应该监听相关的BLE Mesh事件
-    vTaskDelay(pdMS_TO_TICKS(5000)); // 等待5秒
-    
-    key_refresh_in_progress = false;
-    ESP_LOGI(TAG, "Network key refresh completed");
-    
-    return ESP_OK;
-}
-
-/**
- * @brief 检查是否正在进行key refresh
- */
-bool ac_is_key_refresh_in_progress(void) {
-    // 检查超时
-    if (key_refresh_in_progress) {
-        uint32_t current_time = _get_current_timestamp();
-        if (current_time - key_refresh_start_time > KEY_REFRESH_TIMEOUT_MS) {
-            ESP_LOGW(TAG, "Key refresh timeout, resetting state");
-            key_refresh_in_progress = false;
-        }
-    }
-    
-    return key_refresh_in_progress;
 }

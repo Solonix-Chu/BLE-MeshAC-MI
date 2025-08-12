@@ -44,6 +44,10 @@ extern "C" {
 #define AC_OP_DISCONNECT_NOTIFY ESP_BLE_MESH_MODEL_OP_3(0x0E, MY_COMPANY_ID)
 #define AC_OP_DISCONNECT_ACK    ESP_BLE_MESH_MODEL_OP_3(0x0F, MY_COMPANY_ID)
 
+/* AC Operation Codes - Sync (Client<->Hub) */
+#define AC_OP_SYNC_REQ          ESP_BLE_MESH_MODEL_OP_3(0x10, MY_COMPANY_ID)
+#define AC_OP_SYNC_RESP         ESP_BLE_MESH_MODEL_OP_3(0x11, MY_COMPANY_ID)
+
 /* AC Mode Definitions */
 #define AC_MODE_COOL            0x00
 #define AC_MODE_HEAT            0x01

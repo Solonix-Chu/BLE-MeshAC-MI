@@ -55,7 +55,7 @@ void app_main(void)
         ESP_LOGE(TAG, "AC BLE Mesh client init failed (err %d)", err);
         return;
     }
-    
+
     // Initialize device controller
     err = device_controller_init();
     if (err != ESP_OK) {

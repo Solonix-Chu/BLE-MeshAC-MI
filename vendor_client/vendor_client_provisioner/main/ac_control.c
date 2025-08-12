@@ -121,6 +121,8 @@ static esp_err_t _add_device_to_group_internal(uint16_t device_addr);
 static esp_err_t _remove_device_from_group_internal(uint16_t device_addr);
 static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value);
 
+static void _handle_sync_req(uint16_t src);
+
 /* 定义模型操作项 */
 static esp_ble_mesh_model_op_t ac_client_op[] = {
     /* 状态消息响应处理器 */
@@ -179,9 +181,19 @@ static esp_ble_mesh_model_t root_models[] = {
     ESP_BLE_MESH_MODEL_CFG_CLI(&config_client),
 };
 
+static esp_ble_mesh_model_op_t ac_server_sync_op[] = {
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SYNC_REQ, 0),
+    ESP_BLE_MESH_MODEL_OP_END,
+};
+
+static void ac_server_model_cb(esp_ble_mesh_model_cb_event_t event,
+                              esp_ble_mesh_model_cb_param_t *param);
+
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_CLIENT,
     ac_client_op, NULL, &ac_client),
+    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_SERVER,
+                              ac_server_sync_op, NULL, NULL),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -469,6 +481,11 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
         case ESP_BLE_MESH_MODEL_OPERATION_EVT:
             ESP_LOGI(TAG, "接收到消息: 操作码 0x%06" PRIx32 ", 来自节点 0x%04x", 
                     param->model_operation.opcode, param->model_operation.ctx->addr);
+            if (param->model_operation.opcode == AC_OP_SYNC_REQ) {
+                // 作为Hub响应同步请求
+                _handle_sync_req(param->model_operation.ctx->addr);
+                return;
+            }
             handle_status_message(param->model_operation.opcode, 
                                   param->model_operation.msg, 
                                   param->model_operation.length,
@@ -1009,6 +1026,14 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
                     MY_MODEL_ID_AC_CLIENT, MY_COMPANY_ID);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to bind AppKey to AC client model (err %d)", err);
+            }
+            // 绑定到本地 Vendor Server 模型（用于 SYNC_RESP）
+            err = esp_ble_mesh_provisioner_bind_app_key_to_local_model(PROV_OWN_ADDR, prov_key.app_idx,
+                    MY_MODEL_ID_AC_SERVER, MY_COMPANY_ID);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to bind AppKey to AC server model (err %d)", err);
+            } else {
+                ESP_LOGI(TAG, "AppKey bound to local Vendor Server model");
             }
         }
         break;
@@ -2504,4 +2529,82 @@ bool ac_is_key_refresh_in_progress(void) {
     }
     
     return key_refresh_in_progress;
+}
+
+static void _send_sync_resp_chunk(uint16_t dst, uint8_t total, uint8_t offset,
+                                  uint8_t count, uint16_t group_addr)
+{
+    /* 头(6B): total(1) offset(1) count(1) group(2) version(1)
+       每条 23B: addr(2)+flags(1)+name(16)+power(1)+temp(1)+mode(1)+fan(1) */
+    const uint16_t header_len = 6;
+    const uint16_t rec_len = 23;
+    uint8_t buf[6 + 23 * 6] = {0}; // 每片最多携带6条，确保MTU内
+    uint16_t pos = 0;
+
+    buf[pos++] = total;
+    buf[pos++] = offset;
+    buf[pos++] = count;
+    buf[pos++] = (uint8_t)(group_addr & 0xFF);
+    buf[pos++] = (uint8_t)(group_addr >> 8);
+    buf[pos++] = 1; // version
+
+    for (uint8_t i = 0; i < count; i++) {
+        ac_server_info_t *sv = &store.servers[offset + i];
+        buf[pos++] = (uint8_t)(sv->addr & 0xFF);
+        buf[pos++] = (uint8_t)(sv->addr >> 8);
+        uint8_t flags = (sv->is_online ? 0x01 : 0x00) | (sv->is_in_group ? 0x02 : 0x00);
+        buf[pos++] = flags;
+        char name[16] = {0};
+        snprintf(name, sizeof(name), "%s", sv->device_name);
+        memcpy(&buf[pos], name, 16); pos += 16;
+        buf[pos++] = sv->power_state;
+        buf[pos++] = sv->temperature;
+        buf[pos++] = sv->mode;
+        buf[pos++] = sv->fan_speed;
+    }
+
+    esp_ble_mesh_msg_ctx_t ctx = {0};
+    ctx.addr = dst;
+    ctx.net_idx = prov_key.net_idx;
+    ctx.app_idx = prov_key.app_idx;
+    ctx.send_ttl = MSG_SEND_TTL;
+
+    esp_err_t err = esp_ble_mesh_server_model_send_msg(&vnd_models[1], &ctx,
+                                                       AC_OP_SYNC_RESP, pos, buf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SYNC_RESP send failed to 0x%04x: %s", dst, esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "SYNC_RESP chunk sent to 0x%04x: offset=%u count=%u", dst, offset, count);
+    }
+}
+
+static void _handle_sync_req(uint16_t src)
+{
+    uint8_t total = store.num_servers;
+    uint16_t group_addr = AC_GROUP_ADDR;
+
+    const uint8_t per_chunk = 6; // 每片6条
+    for (uint8_t off = 0; off < total; ) {
+        uint8_t remain = total - off;
+        uint8_t cnt = remain > per_chunk ? per_chunk : remain;
+        _send_sync_resp_chunk(src, total, off, cnt, group_addr);
+        off += cnt;
+    }
+}
+
+static void ac_server_model_cb(esp_ble_mesh_model_cb_event_t event,
+                              esp_ble_mesh_model_cb_param_t *param)
+{
+    if (event == ESP_BLE_MESH_MODEL_OPERATION_EVT) {
+        if (param->model_operation.opcode == AC_OP_SYNC_REQ) {
+            uint16_t src = param->model_operation.ctx->addr;
+            ESP_LOGI(TAG, "SYNC_REQ from 0x%04x", src);
+            _handle_sync_req(src);
+        }
+    }
+}
+
+// 注册 Server 模型回调
+static void register_server_model(void) {
+    esp_ble_mesh_register_custom_model_callback(ac_server_model_cb);
 }

@@ -46,6 +46,15 @@ void app_main(void)
     display_init();
     ESP_LOGI(TAG, "Display initialized successfully");
 #endif
+
+#ifdef CONFIG_WEB_ONLY
+    // Start web server (SoftAP + HTTP)
+    err = web_server_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start web server: %s", esp_err_to_name(err));
+        // Continue running BLE Mesh even if web server fails
+    }
+#endif
     
     // Initialize Bluetooth controller and bluedroid stack 
     err = bluetooth_init(); 
@@ -77,13 +86,6 @@ void app_main(void)
         return;
     }
 #endif
-
-    // Start web server (SoftAP + HTTP)
-    err = web_server_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start web server: %s", esp_err_to_name(err));
-        // Continue running BLE Mesh even if web server fails
-    }
     
     ESP_LOGI(TAG, "Client Initialization Complete.");
 
