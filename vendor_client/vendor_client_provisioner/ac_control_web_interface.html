@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>空调控制系统 - BLE Mesh AC Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .status-bar {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .status-item {
+            text-align: center;
+            color: white;
+        }
+
+        .status-value {
+            font-size: 2rem;
+            font-weight: bold;
+            display: block;
+        }
+
+        .status-label {
+            font-size: 0.9rem;
+            opacity: 0.8;
+            margin-top: 5px;
+        }
+
+        .controls-bar {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .batch-control-btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-all-on {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+        }
+
+        .btn-all-off {
+            background: linear-gradient(135deg, #f44336, #d32f2f);
+            color: white;
+        }
+
+        .btn-refresh {
+            background: linear-gradient(135deg, #2196F3, #1976d2);
+            color: white;
+        }
+
+        .batch-control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+
+        .devices-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        .device-card {
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .device-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+
+        .device-card.offline {
+            opacity: 0.6;
+        }
+
+        .device-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .device-name {
+            font-size: 1.3rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .device-addr {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+        }
+
+        .status-offline {
+            background: #f44336;
+        }
+
+        .power-section {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+
+        .power-button {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 10px auto;
+        }
+
+        .power-on {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .power-off {
+            background: linear-gradient(135deg, #757575, #616161);
+            color: white;
+        }
+
+        .power-button:hover {
+            transform: scale(1.1);
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .control-group {
+            background: #f9f9f9;
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .control-label {
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .temperature-control {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .temp-display {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #333;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .temp-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            font-size: 1.2rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .temp-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .temp-up {
+            background: linear-gradient(135deg, #ff5722, #e64a19);
+            color: white;
+        }
+
+        .temp-down {
+            background: linear-gradient(135deg, #2196F3, #1976d2);
+            color: white;
+        }
+
+        .mode-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .mode-btn {
+            flex: 1;
+            min-width: 60px;
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 20px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.8rem;
+            text-align: center;
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, #2196F3, #1976d2);
+            color: white;
+            border-color: #1976d2;
+        }
+
+        .mode-btn:hover {
+            border-color: #2196F3;
+        }
+
+        .fan-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .fan-btn {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 12px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.8rem;
+            text-align: center;
+        }
+
+        .fan-btn.active {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            border-color: #45a049;
+        }
+
+        .fan-btn:hover {
+            border-color: #4CAF50;
+        }
+
+        .last-update {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #999;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        @media (max-width: 768px) {
+            .devices-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .controls-bar {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            color: white;
+            font-size: 1.2rem;
+            margin: 20px 0;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top: 3px solid white;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            border-radius: 10px;
+            color: white;
+            font-weight: bold;
+            z-index: 1000;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.success {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+        }
+
+        .notification.error {
+            background: linear-gradient(135deg, #f44336, #d32f2f);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏠 空调控制系统</h1>
+            <p>BLE Mesh AC Control Interface</p>
+        </div>
+
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-value" id="totalDevices">6</span>
+                <div class="status-label">总设备数</div>
+            </div>
+            <div class="status-item">
+                <span class="status-value" id="onlineDevices">4</span>
+                <div class="status-label">在线设备</div>
+            </div>
+            <div class="status-item">
+                <span class="status-value" id="activeDevices">2</span>
+                <div class="status-label">运行中</div>
+            </div>
+            <div class="status-item">
+                <span class="status-value" id="avgTemp">24°C</span>
+                <div class="status-label">平均设定温度</div>
+            </div>
+        </div>
+
+        <div class="controls-bar">
+            <button class="batch-control-btn btn-all-on" onclick="controlAllDevices('power', 1)">
+                🔥 全部开启
+            </button>
+            <button class="batch-control-btn btn-all-off" onclick="controlAllDevices('power', 0)">
+                ❄️ 全部关闭
+            </button>
+            <button class="batch-control-btn btn-refresh" onclick="refreshAllDevices()">
+                🔄 刷新状态
+            </button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            正在处理请求...
+        </div>
+
+        <div class="devices-grid" id="devicesContainer">
+            <!-- 设备卡片将通过JavaScript动态生成 -->
+        </div>
+    </div>
+
+    <div id="notification" class="notification"></div>
+
+    <script>
+        // ==================== 常量定义 ====================
+        const AC_POWER_OFF = 0;
+        const AC_POWER_ON = 1;
+        
+        const AC_MODE_COOL = 0;
+        const AC_MODE_HEAT = 1;
+        const AC_MODE_FAN = 2;
+        const AC_MODE_DRY = 3;
+        const AC_MODE_AUTO = 4;
+        
+        const AC_FAN_SPEED_AUTO = 0;
+        const AC_FAN_SPEED_LOW = 1;
+        const AC_FAN_SPEED_MEDIUM = 2;
+        const AC_FAN_SPEED_HIGH = 3;
+        
+        const AC_TEMP_MIN = 16;
+        const AC_TEMP_MAX = 30;
+
+        const MODE_NAMES = ['制冷', '制热', '送风', '除湿', '自动'];
+        const FAN_NAMES = ['自动', '低风', '中风', '高风'];
+
+        // ==================== 模拟设备数据 ====================
+        let devices = [
+            {
+                addr: 0x0005,
+                is_online: true,
+                is_configured: true,
+                power_state: AC_POWER_ON,
+                temperature: 24,
+                mode: AC_MODE_COOL,
+                fan_speed: AC_FAN_SPEED_LOW,
+                device_name: "客厅空调",
+                last_update_time: Date.now()
+            },
+            {
+                addr: 0x0006,
+                is_online: true,
+                is_configured: true,
+                power_state: AC_POWER_ON,
+                temperature: 26,
+                mode: AC_MODE_HEAT,
+                fan_speed: AC_FAN_SPEED_MEDIUM,
+                device_name: "主卧空调",
+                last_update_time: Date.now()
+            },
+            {
+                addr: 0x0007,
+                is_online: false,
+                is_configured: true,
+                power_state: AC_POWER_OFF,
+                temperature: 25,
+                mode: AC_MODE_AUTO,
+                fan_speed: AC_FAN_SPEED_AUTO,
+                device_name: "次卧空调",
+                last_update_time: Date.now() - 300000
+            },
+            {
+                addr: 0x0008,
+                is_online: true,
+                is_configured: true,
+                power_state: AC_POWER_OFF,
+                temperature: 23,
+                mode: AC_MODE_COOL,
+                fan_speed: AC_FAN_SPEED_HIGH,
+                device_name: "书房空调",
+                last_update_time: Date.now()
+            },
+            {
+                addr: 0x0009,
+                is_online: true,
+                is_configured: false,
+                power_state: AC_POWER_OFF,
+                temperature: 25,
+                mode: AC_MODE_AUTO,
+                fan_speed: AC_FAN_SPEED_AUTO,
+                device_name: "厨房空调",
+                last_update_time: Date.now()
+            },
+            {
+                addr: 0x000A,
+                is_online: false,
+                is_configured: false,
+                power_state: AC_POWER_OFF,
+                temperature: 22,
+                mode: AC_MODE_COOL,
+                fan_speed: AC_FAN_SPEED_LOW,
+                device_name: "餐厅空调",
+                last_update_time: Date.now() - 600000
+            }
+        ];
+
+        // ==================== 模拟控制函数 ====================
+        function sendCommand(deviceAddr, commandType, value) {
+            return new Promise((resolve, reject) => {
+                // 模拟网络延迟
+                setTimeout(() => {
+                    const device = devices.find(d => d.addr === deviceAddr);
+                    if (!device) {
+                        reject(new Error(`设备 0x${deviceAddr.toString(16).toUpperCase()} 未找到`));
+                        return;
+                    }
+                    
+                    if (!device.is_online) {
+                        reject(new Error(`设备 ${device.device_name} 离线`));
+                        return;
+                    }
+                    
+                    if (!device.is_configured) {
+                        reject(new Error(`设备 ${device.device_name} 未配置完成`));
+                        return;
+                    }
+
+                    // 更新设备状态
+                    switch(commandType) {
+                        case 'power':
+                            device.power_state = value;
+                            break;
+                        case 'temperature':
+                            if (value >= AC_TEMP_MIN && value <= AC_TEMP_MAX) {
+                                device.temperature = value;
+                            }
+                            break;
+                        case 'mode':
+                            if (value >= AC_MODE_COOL && value <= AC_MODE_AUTO) {
+                                device.mode = value;
+                            }
+                            break;
+                        case 'fanSpeed':
+                            if (value >= AC_FAN_SPEED_AUTO && value <= AC_FAN_SPEED_HIGH) {
+                                device.fan_speed = value;
+                            }
+                            break;
+                    }
+                    
+                    device.last_update_time = Date.now();
+                    resolve(`设备 ${device.device_name} 控制成功`);
+                }, Math.random() * 500 + 100); // 100-600ms 随机延迟
+            });
+        }
+
+        // ==================== UI 更新函数 ====================
+        function updateStatusBar() {
+            const totalDevices = devices.length;
+            const onlineDevices = devices.filter(d => d.is_online && d.is_configured).length;
+            const activeDevices = devices.filter(d => d.is_online && d.is_configured && d.power_state === AC_POWER_ON).length;
+            const avgTemp = Math.round(
+                devices.filter(d => d.is_online && d.is_configured && d.power_state === AC_POWER_ON)
+                       .reduce((sum, d) => sum + d.temperature, 0) / activeDevices || 0
+            );
+
+            document.getElementById('totalDevices').textContent = totalDevices;
+            document.getElementById('onlineDevices').textContent = onlineDevices;
+            document.getElementById('activeDevices').textContent = activeDevices;
+            document.getElementById('avgTemp').textContent = activeDevices > 0 ? `${avgTemp}°C` : 'N/A';
+        }
+
+        function formatLastUpdate(timestamp) {
+            const now = Date.now();
+            const diff = now - timestamp;
+            const minutes = Math.floor(diff / 60000);
+            const hours = Math.floor(diff / 3600000);
+            
+            if (diff < 60000) return '刚刚更新';
+            if (minutes < 60) return `${minutes}分钟前`;
+            if (hours < 24) return `${hours}小时前`;
+            return '很久以前';
+        }
+
+        function createDeviceCard(device) {
+            const isOnline = device.is_online && device.is_configured;
+            const statusClass = isOnline ? 'status-online' : 'status-offline';
+            const cardClass = isOnline ? '' : 'offline';
+            
+            return `
+                <div class="device-card ${cardClass}" data-addr="${device.addr}">
+                    <div class="device-header">
+                        <div>
+                            <div class="device-name">
+                                <span class="status-indicator ${statusClass}"></span>
+                                ${device.device_name}
+                            </div>
+                            <div class="device-addr">0x${device.addr.toString(16).toUpperCase()}</div>
+                        </div>
+                        <div style="text-align: right; font-size: 0.8rem; color: #666;">
+                            ${isOnline ? '在线' : '离线'}
+                            ${!device.is_configured ? ' (未配置)' : ''}
+                        </div>
+                    </div>
+
+                    <div class="power-section">
+                        <button class="power-button ${device.power_state === AC_POWER_ON ? 'power-on' : 'power-off'}" 
+                                onclick="togglePower(${device.addr})" 
+                                ${!isOnline ? 'disabled' : ''}>
+                            ${device.power_state === AC_POWER_ON ? '🔥' : '❄️'}
+                        </button>
+                        <div>${device.power_state === AC_POWER_ON ? '运行中' : '已关闭'}</div>
+                    </div>
+
+                    <div class="controls-grid">
+                        <div class="control-group">
+                            <div class="control-label">温度控制</div>
+                            <div class="temperature-control">
+                                <button class="temp-btn temp-down" onclick="adjustTemperature(${device.addr}, -1)" 
+                                        ${!isOnline || device.power_state === AC_POWER_OFF ? 'disabled' : ''}>-</button>
+                                <span class="temp-display">${device.temperature}°C</span>
+                                <button class="temp-btn temp-up" onclick="adjustTemperature(${device.addr}, 1)" 
+                                        ${!isOnline || device.power_state === AC_POWER_OFF ? 'disabled' : ''}>+</button>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label">运行模式</div>
+                            <div class="mode-buttons">
+                                ${MODE_NAMES.map((name, index) => 
+                                    `<button class="mode-btn ${device.mode === index ? 'active' : ''}" 
+                                             onclick="setMode(${device.addr}, ${index})"
+                                             ${!isOnline || device.power_state === AC_POWER_OFF ? 'disabled' : ''}>${name}</button>`
+                                ).join('')}
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label">风速设置</div>
+                            <div class="fan-buttons">
+                                ${FAN_NAMES.map((name, index) => 
+                                    `<button class="fan-btn ${device.fan_speed === index ? 'active' : ''}" 
+                                             onclick="setFanSpeed(${device.addr}, ${index})"
+                                             ${!isOnline || device.power_state === AC_POWER_OFF ? 'disabled' : ''}>${name}</button>`
+                                ).join('')}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="last-update">
+                        最后更新: ${formatLastUpdate(device.last_update_time)}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDevices() {
+            const container = document.getElementById('devicesContainer');
+            container.innerHTML = devices.map(device => createDeviceCard(device)).join('');
+            updateStatusBar();
+        }
+
+        // ==================== 控制函数 ====================
+        async function togglePower(deviceAddr) {
+            const device = devices.find(d => d.addr === deviceAddr);
+            if (!device) return;
+
+            const newPowerState = device.power_state === AC_POWER_ON ? AC_POWER_OFF : AC_POWER_ON;
+            
+            showLoading(true);
+            try {
+                await sendCommand(deviceAddr, 'power', newPowerState);
+                showNotification(`${device.device_name} 已${newPowerState === AC_POWER_ON ? '开启' : '关闭'}`, 'success');
+                renderDevices();
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+            showLoading(false);
+        }
+
+        async function adjustTemperature(deviceAddr, delta) {
+            const device = devices.find(d => d.addr === deviceAddr);
+            if (!device) return;
+
+            const newTemp = Math.max(AC_TEMP_MIN, Math.min(AC_TEMP_MAX, device.temperature + delta));
+            if (newTemp === device.temperature) return;
+
+            showLoading(true);
+            try {
+                await sendCommand(deviceAddr, 'temperature', newTemp);
+                showNotification(`${device.device_name} 温度已设置为 ${newTemp}°C`, 'success');
+                renderDevices();
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+            showLoading(false);
+        }
+
+        async function setMode(deviceAddr, mode) {
+            const device = devices.find(d => d.addr === deviceAddr);
+            if (!device || device.mode === mode) return;
+
+            showLoading(true);
+            try {
+                await sendCommand(deviceAddr, 'mode', mode);
+                showNotification(`${device.device_name} 模式已设置为 ${MODE_NAMES[mode]}`, 'success');
+                renderDevices();
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+            showLoading(false);
+        }
+
+        async function setFanSpeed(deviceAddr, fanSpeed) {
+            const device = devices.find(d => d.addr === deviceAddr);
+            if (!device || device.fan_speed === fanSpeed) return;
+
+            showLoading(true);
+            try {
+                await sendCommand(deviceAddr, 'fanSpeed', fanSpeed);
+                showNotification(`${device.device_name} 风速已设置为 ${FAN_NAMES[fanSpeed]}`, 'success');
+                renderDevices();
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+            showLoading(false);
+        }
+
+        async function controlAllDevices(commandType, value) {
+            const onlineDevices = devices.filter(d => d.is_online && d.is_configured);
+            if (onlineDevices.length === 0) {
+                showNotification('没有在线设备可以控制', 'error');
+                return;
+            }
+
+            showLoading(true);
+            const promises = onlineDevices.map(device => 
+                sendCommand(device.addr, commandType, value)
+            );
+
+            try {
+                await Promise.all(promises);
+                const action = commandType === 'power' ? (value === AC_POWER_ON ? '开启' : '关闭') : '控制';
+                showNotification(`所有在线设备已${action}`, 'success');
+                renderDevices();
+            } catch (error) {
+                showNotification(`批量控制部分失败: ${error.message}`, 'error');
+                renderDevices();
+            }
+            showLoading(false);
+        }
+
+        async function refreshAllDevices() {
+            showLoading(true);
+            
+            // 模拟刷新延迟和状态变化
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // 随机更新一些设备状态来模拟真实情况
+            devices.forEach(device => {
+                if (Math.random() < 0.3) { // 30% 概率更新状态
+                    device.last_update_time = Date.now();
+                    // 偶尔改变在线状态
+                    if (Math.random() < 0.1) {
+                        device.is_online = !device.is_online;
+                    }
+                }
+            });
+
+            showNotification('设备状态已刷新', 'success');
+            renderDevices();
+            showLoading(false);
+        }
+
+        // ==================== UI 辅助函数 ====================
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        function showNotification(message, type = 'success') {
+            const notification = document.getElementById('notification');
+            notification.textContent = message;
+            notification.className = `notification ${type}`;
+            notification.classList.add('show');
+            
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 3000);
+        }
+
+        // ==================== 初始化 ====================
+        document.addEventListener('DOMContentLoaded', function() {
+            renderDevices();
+            
+            // 模拟实时状态更新
+            setInterval(() => {
+                // 随机更新一些设备的最后更新时间
+                devices.forEach(device => {
+                    if (device.is_online && Math.random() < 0.1) {
+                        device.last_update_time = Date.now();
+                    }
+                });
+                renderDevices();
+            }, 30000); // 每30秒更新一次
+        });
+
+        // 添加键盘快捷键
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey) {
+                switch(e.key) {
+                    case '1':
+                        e.preventDefault();
+                        controlAllDevices('power', AC_POWER_ON);
+                        break;
+                    case '2':
+                        e.preventDefault();
+                        controlAllDevices('power', AC_POWER_OFF);
+                        break;
+                    case 'r':
+                        e.preventDefault();
+                        refreshAllDevices();
+                        break;
+                }
+            }
+        });
+    </script>
+</body>
+</html> 

@@ -1,0 +1,94 @@
+menu "Device Controller Configuration"
+
+    config DEVICE_CONTROLLER_BUTTON_UP_GPIO
+        int "Up Button GPIO Number"
+        range 0 48
+        default 6
+        help
+            GPIO number for UP button.
+
+    config DEVICE_CONTROLLER_BUTTON_DOWN_GPIO
+        int "Down Button GPIO Number"
+        range 0 48
+        default 7
+        help
+            GPIO number for DOWN button.
+
+    config DEVICE_CONTROLLER_BUTTON_LEFT_GPIO
+        int "Left Button GPIO Number"
+        range 0 48
+        default 9
+        help
+            GPIO number for LEFT button.
+
+    config DEVICE_CONTROLLER_BUTTON_RIGHT_GPIO
+        int "Right Button GPIO Number"
+        range 0 48
+        default 10
+        help
+            GPIO number for RIGHT button.
+
+    config DEVICE_CONTROLLER_BUTTON_CENTER_GPIO
+        int "Center Button GPIO Number"
+        range 0 48
+        default 8
+        help
+            GPIO number for CENTER button (OK button with single/double click support).
+
+    config DEVICE_CONTROLLER_BUTTON_ACTIVE_LEVEL
+        int "Button Active Level"
+        range 0 1
+        default 0
+        help
+            GPIO level when button is pressed down. 0 for active low, 1 for active high.
+
+    config DEVICE_CONTROLLER_LONG_PRESS_TIME_MS
+        int "Long Press Time (ms)"
+        range 500 5000
+        default 1000
+        help
+            Time in milliseconds to trigger long press event.
+
+    config DEVICE_CONTROLLER_SHORT_PRESS_TIME_MS
+        int "Short Press Time (ms)"
+        range 50 500
+        default 180
+        help
+            Time in milliseconds to trigger short press event.
+
+    config DEVICE_CONTROLLER_DOUBLE_CLICK_TIME_MS
+        int "Double Click Time (ms)"
+        range 100 1000
+        default 500
+        help
+            Maximum time in milliseconds between two clicks for double click detection.
+
+    config DEVICE_CONTROLLER_TIMEOUT_MS
+        int "Menu Timeout (ms)"
+        range 5000 60000
+        default 10000
+        help
+            Timeout in milliseconds for menu navigation and value adjustment states.
+
+    config DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
+        bool "Enable Multi-Device Support"
+        default y
+        help
+            Enable support for managing multiple devices.
+
+    config DEVICE_CONTROLLER_MAX_DEVICES
+        int "Maximum Number of Devices"
+        depends on DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
+        range 1 10
+        default 3
+        help
+            Maximum number of devices that can be managed.
+
+    config DEVICE_CONTROLLER_BOOT_DISPLAY_TIME_MS
+        int "Boot screen display time (ms)"
+        default 1500
+        range 1000 10000
+        help
+            Time to display boot logo screen before switching to main application.
+
+endmenu 
