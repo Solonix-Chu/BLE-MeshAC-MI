@@ -99,7 +99,8 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
     ESP_LOGI(TAG, "Initialize LVGL");
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_cfg.task_stack = 3072;
     // Note: lvgl_port_init may try to initialize esp_timer.
     // Check for "esp_timer: Task is already initialized" if it occurs.
     esp_err_t lvgl_init_res = lvgl_port_init(&lvgl_cfg);
@@ -117,15 +118,19 @@ void display_init(void)
         .panel_handle = panel_handle,
         // For monochrome displays with esp_lvgl_port, full buffer is often required.
         // The size is in terms of pixels that LVGL can render into.
-        .buffer_size = EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES, 
-        .double_buffer = true, // Keep true for now, can be set to false if issues or for memory saving
+        .buffer_size = EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES,
+        .double_buffer = false,
         .hres = EXAMPLE_LCD_H_RES,
         .vres = EXAMPLE_LCD_V_RES,
-        .monochrome = true, 
+        .monochrome = true,
         .rotation = {
             .swap_xy = false,
             .mirror_x = false,
             .mirror_y = false,
+        },
+        .flags = {
+            .buff_dma = 0,
+            .buff_spiram = 1,
         }
     };
     lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);

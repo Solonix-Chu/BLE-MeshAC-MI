@@ -1,0 +1,9 @@
+menu "Project Options"
+
+config WEB_ONLY
+    bool "Build Web-only without LCD UI and Buttons"
+    default y
+    help
+        When enabled, excludes LCD/UI and button-related code, leaving only BLE Mesh and Web server for control.
+
+endmenu 

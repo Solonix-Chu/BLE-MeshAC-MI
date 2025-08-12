@@ -76,5 +76,8 @@ static void board_button_init(void)
 
 void board_init(void)
 {
+#ifndef CONFIG_WEB_ONLY
     board_button_init();
+#endif
+    ESP_LOGI(TAG, "Board init (UI/Buttons disabled)");
 }

@@ -16,10 +16,13 @@
 #include "esp_timer.h"
 
 #include "ble_mesh_example_init.h"
+#ifndef CONFIG_WEB_ONLY
 #include "board.h"
-#include "ac_control.h"
 #include "display.h"
 #include "device_controller.h"
+#endif
+#include "ac_control.h"
+#include "web_server.h"
 
 #define TAG "Client_Main"
 
@@ -37,10 +40,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
     
+#ifndef CONFIG_WEB_ONLY
     board_init(); // Initialize board specific things (LEDs, buttons etc)
 
     display_init();
     ESP_LOGI(TAG, "Display initialized successfully");
+#endif
     
     // Initialize Bluetooth controller and bluedroid stack 
     err = bluetooth_init(); 
@@ -56,6 +61,7 @@ void app_main(void)
         return;
     }
     
+#ifndef CONFIG_WEB_ONLY
     // Initialize device controller
     err = device_controller_init();
     if (err != ESP_OK) {
@@ -70,6 +76,14 @@ void app_main(void)
         device_controller_deinit();
         return;
     }
+#endif
+
+    // Start web server (SoftAP + HTTP)
+    err = web_server_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start web server: %s", esp_err_to_name(err));
+        // Continue running BLE Mesh even if web server fails
+    }
     
     ESP_LOGI(TAG, "Client Initialization Complete.");
 
@@ -83,13 +97,13 @@ void app_main(void)
     // }
 
     while (1) {
-        ESP_LOGI(TAG, "num_servers: %d", ac_get_num_servers());
-        for (uint8_t i = 0; i < ac_get_num_servers(); i++) {
-            uint16_t add = ac_get_server_addr_by_index(i);
-            ESP_LOGI(TAG, "Server[%d] addr: 0x%04x, online: %s", 
-                     i, add,
-                     ac_is_server_online(add) ? "yes" : "no");
-        }
+        // ESP_LOGI(TAG, "num_servers: %d", ac_get_num_servers());
+        // for (uint8_t i = 0; i < ac_get_num_servers(); i++) {
+        //     uint16_t add = ac_get_server_addr_by_index(i);
+        //     ESP_LOGI(TAG, "Server[%d] addr: 0x%04x, online: %s", 
+        //              i, add,
+        //              ac_is_server_online(add) ? "yes" : "no");
+        // }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
