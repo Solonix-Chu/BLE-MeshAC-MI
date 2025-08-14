@@ -1034,6 +1034,14 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
                 ESP_LOGE(TAG, "Failed to bind AppKey to AC server model (err %d)", err);
             } else {
                 ESP_LOGI(TAG, "AppKey bound to local Vendor Server model");
+            // Bind AppKey to local RC_SYNC_SERVER model for SYNC_RESP serving
+            err = esp_ble_mesh_provisioner_bind_app_key_to_local_model(PROV_OWN_ADDR, prov_key.app_idx,
+                    MY_MODEL_ID_RC_SYNC_SERVER, MY_COMPANY_ID);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to bind AppKey to RC_SYNC_SERVER model (err %d)", err);
+            } else {
+                ESP_LOGI(TAG, "AppKey bound to local RC_SYNC_SERVER model");
+            }
             }
         }
         break;
@@ -1054,6 +1062,7 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
 static bool g_last_comp_has_ac_client = false;
 static bool g_last_comp_has_ac_server = false;
 static bool g_last_comp_has_rc_sync_client = false;
+static bool g_last_comp_has_rc_sync_server = false;
 
 static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t length)
 {
@@ -1065,6 +1074,8 @@ static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t
 
     g_last_comp_has_ac_client = false;
     g_last_comp_has_ac_server = false;
+    g_last_comp_has_rc_sync_client = false;
+    g_last_comp_has_rc_sync_server = false;
     g_last_comp_has_rc_sync_client = false;
 
     if (length < 10) { 
@@ -1185,6 +1196,19 @@ static void _example_ble_mesh_config_client_cb(esp_ble_mesh_cfg_client_cb_event_
                 }
             }
         } else if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND) {
+            /* 打印模型绑定响应详情，确认是否为 RC_SYNC_CLIENT 绑定完成 */
+            if (param->status_cb.model_app_status.model_id == MY_MODEL_ID_RC_SYNC_CLIENT &&
+                param->status_cb.model_app_status.status == 0) {
+                ESP_LOGI(TAG, "MODEL_APP_BIND OK for RC_SYNC_CLIENT at node 0x%04x (elem=0x%04x)",
+                         node->unicast_addr, param->status_cb.model_app_status.element_addr);
+            } else {
+                ESP_LOGI(TAG, "MODEL_APP_BIND rsp: status=0x%02x elem=0x%04x model=0x%04x cid=0x%04x app_idx=0x%04x",
+                         param->status_cb.model_app_status.status,
+                         param->status_cb.model_app_status.element_addr,
+                         param->status_cb.model_app_status.model_id,
+                         param->status_cb.model_app_status.company_id,
+                         param->status_cb.model_app_status.app_idx);
+            }
             ESP_LOGI(TAG, "Node 0x%04x provisioned & configured!", node->unicast_addr);
             _on_device_configured(node->unicast_addr);
         }

@@ -50,11 +50,11 @@ void app_main(void)
     }
     
     // Initialize AC control and BLE Mesh client functionality
-    err = ac_client_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "AC BLE Mesh client init failed (err %d)", err);
-        return;
-    }
+    // err = ac_client_init();
+    // if (err != ESP_OK) {
+    //     ESP_LOGE(TAG, "AC BLE Mesh client init failed (err %d)", err);
+    //     return;
+    // }
 
     // Initialize device controller
     err = device_controller_init();

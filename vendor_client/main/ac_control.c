@@ -105,6 +105,28 @@ static uint8_t queue_count = 0;         /* 队列中消息数量 */
 static ac_send_state_t send_state = AC_SEND_STATE_IDLE;
 static ac_msg_queue_item_t current_msg; /* 当前正在发送的消息 */
 
+static esp_err_t ac_send_sync_request(void);
+/* 周期同步定时器 */
+static esp_timer_handle_t sync_timer = NULL;
+static bool sync_timer_started = false;
+static bool first_sync_sent_logged = false;
+
+static void _sync_timer_cb(void *arg)
+{
+    if (prov_key.net_idx == ESP_BLE_MESH_KEY_UNUSED ||
+        prov_key.app_idx == ESP_BLE_MESH_KEY_UNUSED) {
+        ESP_LOGI(TAG, "Periodic SYNC skipped: AppKey/NetKey not ready (net_idx=0x%03x, app_idx=0x%04x)",
+                 prov_key.net_idx, prov_key.app_idx);
+        return;
+    }
+    esp_err_t err = ac_send_sync_request();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Periodic SYNC_REQ failed: %s (0x%x)", esp_err_to_name(err), err);
+    } else {
+        ESP_LOGD(TAG, "Periodic SYNC_REQ sent");
+    }
+}
+
 /* 本节点的服务端状态（用于响应 GET/SET） */
 static struct {
     uint8_t power_state;
@@ -136,20 +158,14 @@ static void _process_next_message(void);
 /* 前向声明 - 组播管理函数 */
 static esp_err_t _send_group_message(ac_msg_type_t msg_type, uint8_t value);
 
-static esp_err_t ac_send_sync_request(void);
 
 /* 定义模型操作项 */
 static esp_ble_mesh_model_op_t ac_client_op[] = {
-    /* 状态消息响应处理器 */
+    /* 状态消息响应处理器（用于ACK映射） */
     ESP_BLE_MESH_MODEL_OP(AC_OP_POWER_STATUS, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_TEMPERATURE_STATUS, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_MODE_STATUS, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_FAN_SPEED_STATUS, 1),
-    /* 心跳包处理器 */
-    ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT, 0),
-    ESP_BLE_MESH_MODEL_OP(AC_OP_HEARTBEAT_ACK, 0),
-    /* 断开连接处理器 */
-    ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_ACK, 0),
     /* 同步响应处理器 */
     ESP_BLE_MESH_MODEL_OP(AC_OP_SYNC_RESP, 0),
     ESP_BLE_MESH_MODEL_OP_END,
@@ -165,6 +181,7 @@ static esp_ble_mesh_model_op_t ac_server_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_TEMPERATURE, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_MODE, 1),
     ESP_BLE_MESH_MODEL_OP(AC_OP_SET_FAN_SPEED, 1),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_NOTIFY, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -178,11 +195,6 @@ static esp_ble_mesh_client_op_pair_t ac_client_op_pair[] = {
     {AC_OP_GET_MODE, AC_OP_MODE_STATUS},
     {AC_OP_SET_FAN_SPEED, AC_OP_FAN_SPEED_STATUS},
     {AC_OP_GET_FAN_SPEED, AC_OP_FAN_SPEED_STATUS},
-    /* 心跳包操作对 - 心跳包不需要状态响应，所以使用相同的操作码 */
-    {AC_OP_HEARTBEAT_ACK, AC_OP_HEARTBEAT_ACK},
-    /* 断开连接操作对 */
-    {AC_OP_DISCONNECT_NOTIFY, AC_OP_DISCONNECT_ACK},
-    /* 同步操作对 */
     {AC_OP_SYNC_REQ, AC_OP_SYNC_RESP},
 };
 
@@ -211,10 +223,8 @@ static esp_ble_mesh_model_t root_models[] = {
 };
 
 static esp_ble_mesh_model_t vnd_models[] = {
-    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_CLIENT,
+    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_RC_SYNC_CLIENT,
     ac_client_op, NULL, &ac_client),
-    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_SERVER,
-    ac_server_op, NULL, NULL),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -489,102 +499,18 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
     ESP_LOGW(TAG, "Into ac_client_model_cb");
     switch (event) {
         case ESP_BLE_MESH_MODEL_OPERATION_EVT: {
-            ESP_LOGI(TAG, "接收到消息: 操作码 0x%06" PRIx32 ", 来自节点 0x%04x", 
-                    param->model_operation.opcode, param->model_operation.ctx->addr);
-
-            /* 服务端模型：处理 GET/SET 并回复 STATUS */
             uint32_t op = param->model_operation.opcode;
-            esp_ble_mesh_model_t *rx_model = param->model_operation.model;
             const uint8_t *rx_data = param->model_operation.msg;
             uint16_t rx_len = param->model_operation.length;
-
-            bool handled_server = false;
-            uint8_t status_value = 0;
-            uint32_t status_opcode = 0;
-
-            switch (op) {
-                case AC_OP_GET_POWER:
-                    status_value = local_ac_state.power_state;
-                    status_opcode = AC_OP_POWER_STATUS;
-                    handled_server = true;
-                    break;
-                case AC_OP_GET_TEMPERATURE:
-                    status_value = local_ac_state.temperature;
-                    status_opcode = AC_OP_TEMPERATURE_STATUS;
-                    handled_server = true;
-                    break;
-                case AC_OP_GET_MODE:
-                    status_value = local_ac_state.mode;
-                    status_opcode = AC_OP_MODE_STATUS;
-                    handled_server = true;
-                    break;
-                case AC_OP_GET_FAN_SPEED:
-                    status_value = local_ac_state.fan_speed;
-                    status_opcode = AC_OP_FAN_SPEED_STATUS;
-                    handled_server = true;
-                    break;
-                case AC_OP_SET_POWER:
-                    if (rx_data != NULL && rx_len >= 1) {
-                        uint8_t v = (rx_data[0] <= AC_POWER_ON) ? rx_data[0] : AC_POWER_OFF;
-                        local_ac_state.power_state = v;
-                        status_value = local_ac_state.power_state;
-                        status_opcode = AC_OP_POWER_STATUS;
-                        handled_server = true;
-                    }
-                    break;
-                case AC_OP_SET_TEMPERATURE:
-                    if (rx_data != NULL && rx_len >= 1) {
-                        uint8_t v = rx_data[0];
-                        if (v < AC_TEMP_MIN) v = AC_TEMP_MIN;
-                        if (v > AC_TEMP_MAX) v = AC_TEMP_MAX;
-                        local_ac_state.temperature = v;
-                        status_value = local_ac_state.temperature;
-                        status_opcode = AC_OP_TEMPERATURE_STATUS;
-                        handled_server = true;
-                    }
-                    break;
-                case AC_OP_SET_MODE:
-                    if (rx_data != NULL && rx_len >= 1) {
-                        uint8_t v = (rx_data[0] > AC_MODE_AUTO) ? AC_MODE_AUTO : rx_data[0];
-                        local_ac_state.mode = v;
-                        status_value = local_ac_state.mode;
-                        status_opcode = AC_OP_MODE_STATUS;
-                        handled_server = true;
-                    }
-                    break;
-                case AC_OP_SET_FAN_SPEED:
-                    if (rx_data != NULL && rx_len >= 1) {
-                        uint8_t v = (rx_data[0] > AC_FAN_SPEED_HIGH) ? AC_FAN_SPEED_LOW : rx_data[0];
-                        local_ac_state.fan_speed = v;
-                        status_value = local_ac_state.fan_speed;
-                        status_opcode = AC_OP_FAN_SPEED_STATUS;
-                        handled_server = true;
-                    }
-                    break;
-                default:
-                    break;
+            if (op == AC_OP_SYNC_RESP) {
+                handle_sync_resp_message(rx_data, rx_len);
+            } else {
+                /* 处理设备状态类消息 */
+                handle_status_message(op,
+                                      rx_data,
+                                      rx_len,
+                                      param->model_operation.ctx->addr);
             }
-
-            if (handled_server) {
-                esp_ble_mesh_msg_ctx_t tx_ctx = *param->model_operation.ctx; /* 回复到来源 */
-                tx_ctx.send_ttl = MSG_SEND_TTL;
-                esp_err_t e = esp_ble_mesh_server_model_send_msg(rx_model, &tx_ctx,
-                                                                 status_opcode, 1, &status_value);
-                if (e != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to send STATUS(0x%06" PRIx32 ") to 0x%04x: %s",
-                             status_opcode, tx_ctx.addr, esp_err_to_name(e));
-                } else {
-                    ESP_LOGI(TAG, "STATUS(0x%06" PRIx32 ") sent to 0x%04x, val=%u",
-                             status_opcode, tx_ctx.addr, status_value);
-                }
-                break; /* 已处理 */
-            }
-
-            /* 其余（客户端）走原有状态处理 */
-            handle_status_message(param->model_operation.opcode, 
-                                  param->model_operation.msg, 
-                                  param->model_operation.length,
-                                  param->model_operation.ctx->addr); // Pass src_addr
             break;
         }
         case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
@@ -604,12 +530,15 @@ static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
             }
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
-            ESP_LOGI(TAG, "接收到发布消息：操作码 0x%06" PRIx32 ", 来自节点 0x%04x", 
-                     param->client_recv_publish_msg.opcode, param->client_recv_publish_msg.ctx->addr);
-            handle_status_message(param->client_recv_publish_msg.opcode,
-                                  param->client_recv_publish_msg.msg,
-                                  param->client_recv_publish_msg.length,
-                                  param->client_recv_publish_msg.ctx->addr); // Pass src_addr
+            if (param->client_recv_publish_msg.opcode == AC_OP_SYNC_RESP) {
+                handle_sync_resp_message(param->client_recv_publish_msg.msg,
+                                         param->client_recv_publish_msg.length);
+            } else {
+                handle_status_message(param->client_recv_publish_msg.opcode,
+                                      param->client_recv_publish_msg.msg,
+                                      param->client_recv_publish_msg.length,
+                                      param->client_recv_publish_msg.ctx->addr);
+            }
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_SEND_TIMEOUT_EVT:
             ESP_LOGW(TAG, "客户端消息超时，操作码 0x%06" PRIx32 ", 目标节点 0x%04x", 
@@ -991,7 +920,8 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
                  param->node_prov_complete.addr, param->node_prov_complete.net_idx);
         prov_key.net_idx = param->node_prov_complete.net_idx;
         self_primary_addr = param->node_prov_complete.addr;
-        // Node-only：不在本地添加或绑定 AppKey，由外部 Provisioner 完成
+        /* 预设使用通用 AppKey 索引，等待远端完成绑定后即可发送 */
+        prov_key.app_idx = APP_KEY_IDX;
         break;
     case ESP_BLE_MESH_NODE_ADD_LOCAL_APP_KEY_COMP_EVT:
         // Node-only：不期望触发本事件，若触发仅记录日志
@@ -1008,8 +938,11 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
             param->node_bind_app_key_to_model_comp.company_id == MY_COMPANY_ID) {
             /* 保存 app_idx，供客户端模型发送使用 */
             prov_key.app_idx = param->node_bind_app_key_to_model_comp.app_idx;
-            if (param->node_bind_app_key_to_model_comp.model_id == MY_MODEL_ID_AC_CLIENT) {
+            if (param->node_bind_app_key_to_model_comp.model_id == MY_MODEL_ID_RC_SYNC_CLIENT) {
                 /* 客户端模型绑定完成后发送同步请求 */
+                ESP_LOGI(TAG, "RC_SYNC Client model bound (elem=0x%04x, app_idx=0x%04x), requesting SYNC now",
+                         param->node_bind_app_key_to_model_comp.element_addr,
+                         param->node_bind_app_key_to_model_comp.app_idx);
                 ac_send_sync_request();
             }
         }
@@ -1049,21 +982,35 @@ static esp_err_t ac_ble_mesh_init(void)
     }
     ac_client.model = &vnd_models[0];
 
-    // // 启用前强制恢复为未配网状态（每次启动均未配网）
-    // {
-    //     esp_err_t reset_err = esp_ble_mesh_node_local_reset();
-    //     if (reset_err != ESP_OK) {
-    //         ESP_LOGW(TAG, "force local reset (unprovisioned) returned %d", reset_err);
-    //     } else {
-    //         ESP_LOGI(TAG, "force local reset done, node is now unprovisioned");
-    //     }
-    // }
-
     // 启用 Node 的 PB-ADV/PB-GATT 握手
     err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "node prov enable failed %d", err);
         return err;
+    }
+
+    /* 启动5秒周期的同步请求定时器（仅启动一次） */
+    if (!sync_timer_started) {
+        if (sync_timer == NULL) {
+            const esp_timer_create_args_t sync_timer_args = {
+                .callback = _sync_timer_cb,
+                .arg = NULL,
+                .name = "ac_sync"
+            };
+            err = esp_timer_create(&sync_timer_args, &sync_timer);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to create sync timer: %s", esp_err_to_name(err));
+            }
+        }
+        if (sync_timer != NULL) {
+            err = esp_timer_start_periodic(sync_timer, 5000000ULL);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to start sync timer: %s", esp_err_to_name(err));
+            } else {
+                sync_timer_started = true;
+                ESP_LOGI(TAG, "Periodic SYNC_REQ timer started (5s)");
+            }
+        }
     }
 
     ESP_LOGI(TAG, "AC BLE Mesh Node initialized, waiting for provisioning...");
@@ -1750,6 +1697,19 @@ bool ac_is_device_in_group(uint16_t device_addr) {
 static esp_err_t ac_send_sync_request(void)
 {
     const uint16_t hub_addr = 0x0001;
+
+    /* 发送前就绪性检查，避免底层返回 ESP_ERR_INVALID_ARG */
+    if (ac_client.model == NULL) {
+        ESP_LOGW(TAG, "SYNC_REQ aborted: client model not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (prov_key.net_idx == ESP_BLE_MESH_KEY_UNUSED ||
+        prov_key.app_idx == ESP_BLE_MESH_KEY_UNUSED) {
+        ESP_LOGW(TAG, "SYNC_REQ aborted: AppKey/NetKey not ready (net_idx=0x%03x, app_idx=0x%04x)",
+                 prov_key.net_idx, prov_key.app_idx);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     esp_ble_mesh_client_common_param_t common = {0};
     set_msg_common(&common, hub_addr, AC_OP_SYNC_REQ);
 
@@ -1763,7 +1723,12 @@ static esp_err_t ac_send_sync_request(void)
         ESP_LOGE(TAG, "Failed to send SYNC_REQ to 0x%04x: %s", hub_addr, esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "SYNC_REQ sent to 0x%04x", hub_addr);
+    if (!first_sync_sent_logged) {
+        first_sync_sent_logged = true;
+        ESP_LOGI(TAG, "First SYNC_REQ sent to 0x%04x (will continue every 5s)", hub_addr);
+    } else {
+        ESP_LOGI(TAG, "SYNC_REQ sent to 0x%04x", hub_addr);
+    }
     return ESP_OK;
 }
 
