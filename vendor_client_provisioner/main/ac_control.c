@@ -181,7 +181,7 @@ static esp_ble_mesh_model_t root_models[] = {
     ESP_BLE_MESH_MODEL_CFG_CLI(&config_client),
 };
 
-static esp_ble_mesh_model_op_t ac_server_sync_op[] = {
+static esp_ble_mesh_model_op_t rc_sync_server_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_SYNC_REQ, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
@@ -192,8 +192,8 @@ static void ac_server_model_cb(esp_ble_mesh_model_cb_event_t event,
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_CLIENT,
     ac_client_op, NULL, &ac_client),
-    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_SERVER,
-                              ac_server_sync_op, NULL, NULL),
+    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_RC_SYNC_SERVER,
+                              rc_sync_server_op, NULL, NULL),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -1051,6 +1051,10 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
     }
 }
 
+static bool g_last_comp_has_ac_client = false;
+static bool g_last_comp_has_ac_server = false;
+static bool g_last_comp_has_rc_sync_client = false;
+
 static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t length)
 {
     uint16_t cid, pid, vid, crpl, feat;
@@ -1058,6 +1062,10 @@ static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t
     uint8_t nums, numv;
     uint16_t offset;
     int i;
+
+    g_last_comp_has_ac_client = false;
+    g_last_comp_has_ac_server = false;
+    g_last_comp_has_rc_sync_client = false;
 
     if (length < 10) { 
         ESP_LOGE(TAG, "Composition data too short (%d bytes)", length);
@@ -1092,6 +1100,11 @@ static void _example_ble_mesh_parse_node_comp_data(const uint8_t *data, uint16_t
             company_id = COMP_DATA_2_OCTET(data, offset);
             model_id = COMP_DATA_2_OCTET(data, offset + 2);
             ESP_LOGI(TAG, "* VendorModel(CID 0x%04x, MID 0x%04x) *", company_id, model_id);
+            if (company_id == MY_COMPANY_ID) {
+                if (model_id == MY_MODEL_ID_AC_CLIENT) g_last_comp_has_ac_client = true;
+                if (model_id == MY_MODEL_ID_AC_SERVER) g_last_comp_has_ac_server = true;
+                if (model_id == MY_MODEL_ID_RC_SYNC_CLIENT) g_last_comp_has_rc_sync_client = true;
+            }
             offset += 4;
         }
         if (i < numv) break; 
@@ -1148,14 +1161,28 @@ static void _example_ble_mesh_config_client_cb(esp_ble_mesh_cfg_client_cb_event_
         break;
     case ESP_BLE_MESH_CFG_CLIENT_SET_STATE_EVT:
         if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD) {
-            _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND);
-            set.model_app_bind.element_addr = node->unicast_addr; 
-            set.model_app_bind.model_app_idx = prov_key.app_idx;
-            set.model_app_bind.model_id = MY_MODEL_ID_AC_SERVER; // Bind to AC Server model
-            set.model_app_bind.company_id = MY_COMPANY_ID;
-            err = esp_ble_mesh_config_client_set_state(&common, &set);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to send Config Model App Bind (err %d)", err);
+            /* 根据 composition 检测结果，有选择地绑定模型 */
+            if (g_last_comp_has_rc_sync_client) {
+                _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND);
+                set.model_app_bind.element_addr = node->unicast_addr;
+                set.model_app_bind.model_app_idx = prov_key.app_idx;
+                set.model_app_bind.model_id = MY_MODEL_ID_RC_SYNC_CLIENT;
+                set.model_app_bind.company_id = MY_COMPANY_ID;
+                err = esp_ble_mesh_config_client_set_state(&common, &set);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to send Config Model App Bind (RC_SYNC_CLIENT) (err %d)", err);
+                }
+            }
+            if (g_last_comp_has_ac_server) {
+                _example_ble_mesh_set_msg_common(&common, node, config_client.model, ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND);
+                set.model_app_bind.element_addr = node->unicast_addr;
+                set.model_app_bind.model_app_idx = prov_key.app_idx;
+                set.model_app_bind.model_id = MY_MODEL_ID_AC_SERVER;
+                set.model_app_bind.company_id = MY_COMPANY_ID;
+                err = esp_ble_mesh_config_client_set_state(&common, &set);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to send Config Model App Bind (AC_SERVER) (err %d)", err);
+                }
             }
         } else if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND) {
             ESP_LOGI(TAG, "Node 0x%04x provisioned & configured!", node->unicast_addr);

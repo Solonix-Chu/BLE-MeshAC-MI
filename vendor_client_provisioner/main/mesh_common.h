@@ -15,6 +15,8 @@ extern "C" {
 /* 模型ID */
 #define MY_MODEL_ID_AC_SERVER    0x0002
 #define MY_MODEL_ID_AC_CLIENT    0x0001
+#define MY_MODEL_ID_RC_SYNC_CLIENT  0x0100
+#define MY_MODEL_ID_RC_SYNC_SERVER  0x0101
 
 /* AC Operation Codes - Power Control */
 #define AC_OP_SET_POWER         ESP_BLE_MESH_MODEL_OP_3(0x00, MY_COMPANY_ID)
