@@ -105,6 +105,19 @@ static uint8_t queue_count = 0;         /* 队列中消息数量 */
 static ac_send_state_t send_state = AC_SEND_STATE_IDLE;
 static ac_msg_queue_item_t current_msg; /* 当前正在发送的消息 */
 
+/* 本节点的服务端状态（用于响应 GET/SET） */
+static struct {
+    uint8_t power_state;
+    uint8_t temperature;
+    uint8_t mode;
+    uint8_t fan_speed;
+} local_ac_state = {
+    .power_state = AC_POWER_OFF,
+    .temperature = 25,
+    .mode = AC_MODE_AUTO,
+    .fan_speed = AC_FAN_SPEED_LOW,
+};
+
 /* ==================== 设备删除和网络管理API实现 ==================== */
 
 // 全局变量跟踪断开连接ACK状态
@@ -139,6 +152,19 @@ static esp_ble_mesh_model_op_t ac_client_op[] = {
     ESP_BLE_MESH_MODEL_OP(AC_OP_DISCONNECT_ACK, 0),
     /* 同步响应处理器 */
     ESP_BLE_MESH_MODEL_OP(AC_OP_SYNC_RESP, 0),
+    ESP_BLE_MESH_MODEL_OP_END,
+};
+
+/* 服务端模型操作项（处理 GET/SET 并回复 STATUS） */
+static esp_ble_mesh_model_op_t ac_server_op[] = {
+    ESP_BLE_MESH_MODEL_OP(AC_OP_GET_POWER, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_GET_TEMPERATURE, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_GET_MODE, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_GET_FAN_SPEED, 0),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SET_POWER, 1),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SET_TEMPERATURE, 1),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SET_MODE, 1),
+    ESP_BLE_MESH_MODEL_OP(AC_OP_SET_FAN_SPEED, 1),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -187,6 +213,8 @@ static esp_ble_mesh_model_t root_models[] = {
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_CLIENT,
     ac_client_op, NULL, &ac_client),
+    ESP_BLE_MESH_VENDOR_MODEL(MY_COMPANY_ID, MY_MODEL_ID_AC_SERVER,
+    ac_server_op, NULL, NULL),
 };
 
 static esp_ble_mesh_elem_t elements[] = {
@@ -454,23 +482,111 @@ static void handle_status_message(uint32_t opcode, const uint8_t *data, uint16_t
     }
 }
 
-// 将解析函数体放在前向声明之后（文件头部已有声明）
-// 删除重复实现，函数体在更前位置提供
-
 /* 自定义模型回调 */
 static void ac_client_model_cb(esp_ble_mesh_model_cb_event_t event,
                               esp_ble_mesh_model_cb_param_t *param)
 {
     ESP_LOGW(TAG, "Into ac_client_model_cb");
     switch (event) {
-        case ESP_BLE_MESH_MODEL_OPERATION_EVT:
+        case ESP_BLE_MESH_MODEL_OPERATION_EVT: {
             ESP_LOGI(TAG, "接收到消息: 操作码 0x%06" PRIx32 ", 来自节点 0x%04x", 
                     param->model_operation.opcode, param->model_operation.ctx->addr);
+
+            /* 服务端模型：处理 GET/SET 并回复 STATUS */
+            uint32_t op = param->model_operation.opcode;
+            esp_ble_mesh_model_t *rx_model = param->model_operation.model;
+            const uint8_t *rx_data = param->model_operation.msg;
+            uint16_t rx_len = param->model_operation.length;
+
+            bool handled_server = false;
+            uint8_t status_value = 0;
+            uint32_t status_opcode = 0;
+
+            switch (op) {
+                case AC_OP_GET_POWER:
+                    status_value = local_ac_state.power_state;
+                    status_opcode = AC_OP_POWER_STATUS;
+                    handled_server = true;
+                    break;
+                case AC_OP_GET_TEMPERATURE:
+                    status_value = local_ac_state.temperature;
+                    status_opcode = AC_OP_TEMPERATURE_STATUS;
+                    handled_server = true;
+                    break;
+                case AC_OP_GET_MODE:
+                    status_value = local_ac_state.mode;
+                    status_opcode = AC_OP_MODE_STATUS;
+                    handled_server = true;
+                    break;
+                case AC_OP_GET_FAN_SPEED:
+                    status_value = local_ac_state.fan_speed;
+                    status_opcode = AC_OP_FAN_SPEED_STATUS;
+                    handled_server = true;
+                    break;
+                case AC_OP_SET_POWER:
+                    if (rx_data != NULL && rx_len >= 1) {
+                        uint8_t v = (rx_data[0] <= AC_POWER_ON) ? rx_data[0] : AC_POWER_OFF;
+                        local_ac_state.power_state = v;
+                        status_value = local_ac_state.power_state;
+                        status_opcode = AC_OP_POWER_STATUS;
+                        handled_server = true;
+                    }
+                    break;
+                case AC_OP_SET_TEMPERATURE:
+                    if (rx_data != NULL && rx_len >= 1) {
+                        uint8_t v = rx_data[0];
+                        if (v < AC_TEMP_MIN) v = AC_TEMP_MIN;
+                        if (v > AC_TEMP_MAX) v = AC_TEMP_MAX;
+                        local_ac_state.temperature = v;
+                        status_value = local_ac_state.temperature;
+                        status_opcode = AC_OP_TEMPERATURE_STATUS;
+                        handled_server = true;
+                    }
+                    break;
+                case AC_OP_SET_MODE:
+                    if (rx_data != NULL && rx_len >= 1) {
+                        uint8_t v = (rx_data[0] > AC_MODE_AUTO) ? AC_MODE_AUTO : rx_data[0];
+                        local_ac_state.mode = v;
+                        status_value = local_ac_state.mode;
+                        status_opcode = AC_OP_MODE_STATUS;
+                        handled_server = true;
+                    }
+                    break;
+                case AC_OP_SET_FAN_SPEED:
+                    if (rx_data != NULL && rx_len >= 1) {
+                        uint8_t v = (rx_data[0] > AC_FAN_SPEED_HIGH) ? AC_FAN_SPEED_LOW : rx_data[0];
+                        local_ac_state.fan_speed = v;
+                        status_value = local_ac_state.fan_speed;
+                        status_opcode = AC_OP_FAN_SPEED_STATUS;
+                        handled_server = true;
+                    }
+                    break;
+                default:
+                    break;
+            }
+
+            if (handled_server) {
+                esp_ble_mesh_msg_ctx_t tx_ctx = *param->model_operation.ctx; /* 回复到来源 */
+                tx_ctx.send_ttl = MSG_SEND_TTL;
+                esp_err_t e = esp_ble_mesh_server_model_send_msg(rx_model, &tx_ctx,
+                                                                 status_opcode, 1, &status_value);
+                if (e != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to send STATUS(0x%06" PRIx32 ") to 0x%04x: %s",
+                             status_opcode, tx_ctx.addr, esp_err_to_name(e));
+                } else {
+                    ESP_LOGI(TAG, "STATUS(0x%06" PRIx32 ") sent to 0x%04x, val=%u",
+                             status_opcode, tx_ctx.addr, status_value);
+                }
+                break; /* 已处理 */
+            }
+
+            /* 其余（客户端）走原有状态处理 */
             handle_status_message(param->model_operation.opcode, 
                                   param->model_operation.msg, 
                                   param->model_operation.length,
                                   param->model_operation.ctx->addr); // Pass src_addr
             break;
+        }
         case ESP_BLE_MESH_MODEL_SEND_COMP_EVT:
             if (param->model_send_comp.err_code) {
                 ESP_LOGW(TAG, "发送失败，错误码 0x%04x，操作码 0x%06" PRIx32, 
@@ -889,9 +1005,13 @@ static void _example_ble_mesh_provisioning_cb(esp_ble_mesh_prov_cb_event_t event
                  param->node_bind_app_key_to_model_comp.model_id,
                  param->node_bind_app_key_to_model_comp.company_id);
         if (param->node_bind_app_key_to_model_comp.err_code == 0 &&
-            param->node_bind_app_key_to_model_comp.model_id == MY_MODEL_ID_AC_CLIENT &&
             param->node_bind_app_key_to_model_comp.company_id == MY_COMPANY_ID) {
-            ac_send_sync_request();
+            /* 保存 app_idx，供客户端模型发送使用 */
+            prov_key.app_idx = param->node_bind_app_key_to_model_comp.app_idx;
+            if (param->node_bind_app_key_to_model_comp.model_id == MY_MODEL_ID_AC_CLIENT) {
+                /* 客户端模型绑定完成后发送同步请求 */
+                ac_send_sync_request();
+            }
         }
         break;
     default:
