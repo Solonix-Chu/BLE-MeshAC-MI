@@ -220,7 +220,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
             return ESP_ERR_INVALID_ARG;
         }
 
-        param_name = feature ? feature->name : "Feature";
+        param_name = (feature && feature->name) ? feature->name : "Feature";
         snprintf(msg, sizeof(msg), "All Devices %s: %ld", param_name, value);
         ret = sh_client_group_set_feature(feature_id, value);
 
@@ -243,7 +243,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
     }
 
     // 检查是否为设备删除或连接切换请求
-    if (param == DC_PARAM_MAX && value == 0xFF) {
+    if (param == DC_PARAM_ACTION && value == 0xFF) {
         ESP_LOGI(TAG, "Processing device connection toggle for device 0x%04X", device_addr);
 
         // 切换设备连接状态
@@ -272,7 +272,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
     }
 
     // 检查是否为完全删除设备请求（长按删除）
-    if (param == DC_PARAM_MAX && value == 0xFE) {
+    if (param == DC_PARAM_ACTION && value == 0xFE) {
         ESP_LOGI(TAG, "Processing complete device removal for device 0x%04X", device_addr);
         dc_ui_integration_show_message("REMOVING DEVICE...", 3000);
 
@@ -294,7 +294,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
     }
 
     if (feature_id) {
-        param_name = feature ? feature->name : "Feature";
+        param_name = (feature && feature->name) ? feature->name : "Feature";
         snprintf(msg, sizeof(msg), "%s: %ld", param_name, value);
         ret = sh_client_set_feature(device_addr, feature_id, value);
         if (ret == ESP_OK) {
@@ -653,7 +653,7 @@ static void sync_all_devices_status(void)
 
 static uint16_t get_feature_id_for_device_param(uint8_t device_id, dc_parameter_t param)
 {
-    if (param == DC_PARAM_MAX) {
+    if (param == DC_PARAM_ACTION) {
         return 0;
     }
 

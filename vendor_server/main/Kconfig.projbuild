@@ -44,4 +44,23 @@ menu "Example Configuration"
 
     endchoice
 
+    choice SH_NODE_PROFILE
+        prompt "Smart-home node profile"
+        default SH_NODE_PROFILE_AC
+        help
+            Select the built-in smart-home profile exposed by this node
+            firmware. Flash different server devices with different profiles
+            to validate generic client discovery and feature control.
+
+        config SH_NODE_PROFILE_AC
+            bool "Air Conditioner"
+
+        config SH_NODE_PROFILE_LIGHT
+            bool "Light"
+
+        config SH_NODE_PROFILE_SWITCH
+            bool "Switch"
+
+    endchoice
+
 endmenu

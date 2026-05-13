@@ -19,7 +19,7 @@ static bool s_initialized = false;
 // Parameter configurations
 static const char* s_mode_options[] = {"Cool", "Heat", "Fan", "Dry", "Auto"};
 
-static const dc_param_config_t s_param_configs[DC_PARAM_MAX] = {
+static const dc_param_config_t s_param_configs[DC_PARAM_LEGACY_COUNT] = {
     [DC_PARAM_POWER] = {
         .param_id = DC_PARAM_POWER,
         .feature_id = SH_FEATURE_ID_POWER,
@@ -129,7 +129,7 @@ static uint8_t get_device_parameter_count(uint8_t device_idx)
         s_devices[device_idx].profile->feature_count > 0) {
         return s_devices[device_idx].profile->feature_count;
     }
-    return DC_PARAM_MAX;
+    return DC_PARAM_LEGACY_COUNT;
 }
 
 static const sh_feature_def_t *get_device_feature_def(uint8_t device_idx, dc_parameter_t param)
@@ -277,6 +277,11 @@ static void adjust_value(dc_parameter_t param, int32_t *value, bool increment)
         return;
     }
 
+    if (param >= DC_PARAM_LEGACY_COUNT) {
+        ESP_LOGW(TAG, "No fallback parameter config for %d", param);
+        return;
+    }
+
     const dc_param_config_t *config = &s_param_configs[param];
     int32_t old_value = *value;
 
@@ -411,7 +416,7 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                         // 这里我们定义一个特殊的参数值来表示切换连接状态
                         esp_err_t ret = s_callbacks.param_change_cb(
                             s_devices[s_context.current_device_idx].device_id,
-                            DC_PARAM_MAX, // 使用MAX作为特殊标识
+                            DC_PARAM_ACTION,
                             0xFF, // 使用0xFF作为"切换连接"的特殊值
                             s_callbacks.user_data
                         );

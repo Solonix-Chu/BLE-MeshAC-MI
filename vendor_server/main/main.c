@@ -17,8 +17,8 @@
 
 #include "board.h"
 #include "ble_mesh_example_init.h" // For bluetooth_init() and ble_mesh_get_dev_uuid() if still used here
-#include "mesh_common.h" // For common definitions like MY_COMPANY_ID etc.
-#include "ac_control.h"  // For ac_server_init()
+#include "mesh_common.h" // Compatibility mesh definitions
+#include "ac_control.h"  // Compatibility facade over the generic smart-home node
 #include "display.h"     // For display_init()
 #include "ui_update.h"   // For ui_update_init()
 
@@ -49,14 +49,13 @@ void app_main(void)
         return;
     }
 
-    /* 
-     * Initialize the AC BLE Mesh Server Module.
-     * This function now handles all BLE Mesh stack initialization,
-     * model registration, and callback setup.
+    /*
+     * Initialize the selected smart-home node profile.
+     * This function handles BLE Mesh model registration and callbacks.
      */
     err = ac_server_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG_MAIN, "AC BLE Mesh Server Module init failed (err %d)", err);
+        ESP_LOGE(TAG_MAIN, "Smart-home BLE Mesh node init failed (err %d)", err);
         // Handle initialization failure (e.g., restart, error state)
         return;
     }
@@ -68,5 +67,5 @@ void app_main(void)
         ESP_LOGW(TAG_MAIN, "UI update init failed (err %d), continuing without UI updates", err);
     }
 
-    ESP_LOGI(TAG_MAIN, "Application initialization complete. AC Server is running.");
+    ESP_LOGI(TAG_MAIN, "Application initialization complete. Smart-home node is running.");
 }

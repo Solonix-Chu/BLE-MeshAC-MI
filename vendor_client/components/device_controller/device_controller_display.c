@@ -20,7 +20,7 @@ static char s_temp_message[128] = {0};
 static bool s_showing_temp_message = false;
 
 // Parameter names for display
-static const char* s_param_names[DC_PARAM_MAX] = {
+static const char* s_param_names[DC_PARAM_LEGACY_COUNT] = {
     [DC_PARAM_POWER] = "Power",
     [DC_PARAM_TEMPERATURE] = "Temp",
     [DC_PARAM_FAN_SPEED] = "Fan",
@@ -30,7 +30,7 @@ static const char* s_param_names[DC_PARAM_MAX] = {
 // Mode names corresponding to mesh_common.h definitions
 static const char* s_mode_names[] = {"Cool", "Heat", "Fan", "Dry", "Auto"};
 
-// Fan speed names corresponding to mesh_common.h definitions  
+// Fan speed names corresponding to mesh_common.h definitions
 static const char* s_fan_names[] = {"Auto", "Low", "Med", "High"};
 
 // Forward declarations
@@ -40,12 +40,15 @@ static void display_idle_state(const dc_context_t *context);
 static void display_menu_navigate_state(const dc_context_t *context);
 static void display_value_adjust_state(const dc_context_t *context);
 static const char* get_parameter_value_string(const dc_device_info_t *device, dc_parameter_t param, int32_t value);
+static uint8_t get_display_param_count(const dc_device_info_t *device);
+static const sh_feature_def_t *get_display_feature(const dc_device_info_t *device, dc_parameter_t param);
+static const char *format_display_feature_value(const sh_feature_def_t *feature, int32_t value);
 
 // Blink timer callback for menu highlight
 static void blink_timer_callback(void* arg)
 {
     s_blink_state = !s_blink_state;
-    
+
     // Trigger display update when blinking to show the change
     const dc_context_t *context = dc_state_machine_get_context();
     if (context && context->current_state == DC_STATE_MENU_NAVIGATE) {
@@ -58,7 +61,7 @@ static void message_timer_callback(void* arg)
 {
     s_showing_temp_message = false;
     memset(s_temp_message, 0, sizeof(s_temp_message));
-    
+
     // Update display to show normal content
     const dc_context_t *context = dc_state_machine_get_context();
     if (context) {
@@ -69,30 +72,76 @@ static void message_timer_callback(void* arg)
 static const char* get_parameter_value_string(const dc_device_info_t *device, dc_parameter_t param, int32_t value)
 {
     static char value_str[32];
-    
+    const sh_feature_def_t *feature = get_display_feature(device, param);
+
+    if (feature) {
+        return format_display_feature_value(feature, value);
+    }
+
     switch (param) {
         case DC_PARAM_POWER:
             return value ? "ON" : "OFF";
-            
+
         case DC_PARAM_TEMPERATURE:
             snprintf(value_str, sizeof(value_str), "%ld°C", value);
             return value_str;
-            
+
         case DC_PARAM_FAN_SPEED:
             if (value >= 0 && value < 4) {
                 return s_fan_names[value];
             }
             return "Unknown";
-            
+
         case DC_PARAM_MODE:
             if (value >= 0 && value < 5) {
                 return s_mode_names[value];
             }
             return "Unknown";
-            
+
         default:
             return "N/A";
     }
+}
+
+static uint8_t get_display_param_count(const dc_device_info_t *device)
+{
+    if (device && device->profile && device->profile->feature_count > 0) {
+        return device->profile->feature_count;
+    }
+    return DC_PARAM_LEGACY_COUNT;
+}
+
+static const sh_feature_def_t *get_display_feature(const dc_device_info_t *device, dc_parameter_t param)
+{
+    if (!device || !device->profile || param >= device->profile->feature_count) {
+        return NULL;
+    }
+    return &device->profile->features[param];
+}
+
+static const char *format_display_feature_value(const sh_feature_def_t *feature, int32_t value)
+{
+    static char value_str[32];
+
+    if (!feature) {
+        return "N/A";
+    }
+    switch (feature->type) {
+        case SH_FEATURE_TYPE_BOOL:
+            return value ? "ON" : "OFF";
+        case SH_FEATURE_TYPE_ENUM:
+            if (value >= 0 && value < feature->constraints.enum_count &&
+                feature->constraints.enum_labels) {
+                return feature->constraints.enum_labels[value];
+            }
+            break;
+        case SH_FEATURE_TYPE_INT:
+            break;
+        default:
+            return "N/A";
+    }
+    snprintf(value_str, sizeof(value_str), "%ld", value);
+    return value_str;
 }
 
 static void display_idle_state(const dc_context_t *context)
@@ -102,13 +151,13 @@ static void display_idle_state(const dc_context_t *context)
         ESP_LOGI(TAG, "Display: No device information available");
         return;
     }
-    
+
     ESP_LOGI(TAG, "=== DEVICE CONTROLLER ===");
-    
+
 #if DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
     uint8_t device_count = dc_state_machine_get_device_count();
     if (device_count > 1) {
-        ESP_LOGI(TAG, "Device: %s (%d/%d)", device->device_name, 
+        ESP_LOGI(TAG, "Device: %s (%d/%d)", device->device_name,
                 context->current_device_idx + 1, device_count);
     } else {
         ESP_LOGI(TAG, "Device: %s", device->device_name);
@@ -116,18 +165,32 @@ static void display_idle_state(const dc_context_t *context)
 #else
     ESP_LOGI(TAG, "Device: %s", device->device_name);
 #endif
-    
+
     ESP_LOGI(TAG, "Status: %s", device->is_online ? "Online" : "Offline");
-    ESP_LOGI(TAG, "Power: %s", device->status.power ? "ON" : "OFF");
-    
-    if (device->status.power) {
+
+    if (device->profile) {
+        ESP_LOGI(TAG, "Profile: %s (0x%04x)",
+                 device->profile->display_name ? device->profile->display_name : "Profile",
+                 device->profile->profile_id);
+        for (uint8_t i = 0; i < device->profile->feature_count; i++) {
+            const sh_feature_def_t *feature = &device->profile->features[i];
+            const sh_feature_state_t *state = sh_model_find_const_state(
+                device->feature_states,
+                device->feature_state_count,
+                feature->feature_id);
+            int32_t value = state ? state->value : feature->default_value;
+            ESP_LOGI(TAG, "%s: %s", feature->name ? feature->name : "Feature",
+                     format_display_feature_value(feature, value));
+        }
+    } else {
+        ESP_LOGI(TAG, "Power: %s", device->status.power ? "ON" : "OFF");
         ESP_LOGI(TAG, "Temperature: %ld°C", device->status.temperature);
-        ESP_LOGI(TAG, "Fan Speed: %s", (device->status.fan_speed >= 0 && device->status.fan_speed < 4) ? 
+        ESP_LOGI(TAG, "Fan Speed: %s", (device->status.fan_speed >= 0 && device->status.fan_speed < 4) ?
                  s_fan_names[device->status.fan_speed] : "Unknown");
-        ESP_LOGI(TAG, "Mode: %s", (device->status.mode >= 0 && device->status.mode < 5) ? 
+        ESP_LOGI(TAG, "Mode: %s", (device->status.mode >= 0 && device->status.mode < 5) ?
                  s_mode_names[device->status.mode] : "Unknown");
     }
-    
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "Double-click CENTER to enter settings");
     ESP_LOGI(TAG, "========================");
@@ -135,22 +198,28 @@ static void display_idle_state(const dc_context_t *context)
 
 static void display_menu_navigate_state(const dc_context_t *context)
 {
+    const dc_device_info_t *device = dc_state_machine_get_device_info(context->current_device_idx);
+    uint8_t param_count = get_display_param_count(device);
+
     ESP_LOGI(TAG, "=== SETTINGS MENU ===");
-    
-    for (int i = 0; i < DC_PARAM_MAX; i++) {
+
+    for (int i = 0; i < param_count; i++) {
         bool is_selected = (i == context->current_selection);
         const char *indicator = "";
-        
+        const sh_feature_def_t *feature = get_display_feature(device, (dc_parameter_t)i);
+        const char *name = feature ? (feature->name ? feature->name : "Feature") :
+            (i < DC_PARAM_LEGACY_COUNT ? s_param_names[i] : "Feature");
+
         if (is_selected) {
             // Show blinking indicator for selected item
             indicator = s_blink_state ? ">>> " : "    ";
         } else {
             indicator = "    ";
         }
-        
-        ESP_LOGI(TAG, "%s%s", indicator, s_param_names[i]);
+
+        ESP_LOGI(TAG, "%s%s", indicator, name);
     }
-    
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "UP/DOWN: Navigate");
     ESP_LOGI(TAG, "CENTER: Select");
@@ -164,13 +233,22 @@ static void display_value_adjust_state(const dc_context_t *context)
     if (!device) {
         return;
     }
-    
+
     ESP_LOGI(TAG, "=== ADJUST VALUE ===");
-    ESP_LOGI(TAG, "Parameter: %s", s_param_names[context->selected_parameter]);
-    
+    const sh_feature_def_t *feature = get_display_feature(device, context->selected_parameter);
+    const char *param_name = feature ? (feature->name ? feature->name : "Feature") :
+        (context->selected_parameter < DC_PARAM_LEGACY_COUNT ?
+         s_param_names[context->selected_parameter] : "Feature");
+    ESP_LOGI(TAG, "Parameter: %s", param_name);
+
     // Show current device value
     int32_t current_value = 0;
-    switch (context->selected_parameter) {
+    if (feature) {
+        const sh_feature_state_t *state = sh_model_find_const_state(device->feature_states,
+                                                                    device->feature_state_count,
+                                                                    feature->feature_id);
+        current_value = state ? state->value : feature->default_value;
+    } else switch (context->selected_parameter) {
         case DC_PARAM_POWER:
             current_value = device->status.power ? 1 : 0;
             break;
@@ -186,10 +264,10 @@ static void display_value_adjust_state(const dc_context_t *context)
         default:
             break;
     }
-    
+
     ESP_LOGI(TAG, "Current: %s", get_parameter_value_string(device, context->selected_parameter, current_value));
     ESP_LOGI(TAG, "New:     %s", get_parameter_value_string(device, context->selected_parameter, context->editing_value));
-    
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "UP/DOWN: Change value");
     ESP_LOGI(TAG, "CENTER: Apply & Save");
@@ -203,37 +281,37 @@ esp_err_t dc_display_init(void)
         ESP_LOGW(TAG, "Display already initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     // Create blink timer for menu highlighting
     esp_timer_create_args_t blink_timer_args = {
         .callback = blink_timer_callback,
         .arg = NULL,
         .name = "dc_blink"
     };
-    
+
     esp_err_t ret = esp_timer_create(&blink_timer_args, &s_blink_timer);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create blink timer: %s", esp_err_to_name(ret));
         return ret;
     }
-    
+
     // Create message timer for temporary messages
     esp_timer_create_args_t message_timer_args = {
         .callback = message_timer_callback,
         .arg = NULL,
         .name = "dc_message"
     };
-    
+
     ret = esp_timer_create(&message_timer_args, &s_message_timer);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create message timer: %s", esp_err_to_name(ret));
         esp_timer_delete(s_blink_timer);
         return ret;
     }
-    
+
     s_initialized = true;
     ESP_LOGI(TAG, "Display module initialized");
-    
+
     return ESP_OK;
 }
 
@@ -242,23 +320,23 @@ esp_err_t dc_display_deinit(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     // Stop and delete timers
     if (s_blink_timer) {
         esp_timer_stop(s_blink_timer);
         esp_timer_delete(s_blink_timer);
         s_blink_timer = NULL;
     }
-    
+
     if (s_message_timer) {
         esp_timer_stop(s_message_timer);
         esp_timer_delete(s_message_timer);
         s_message_timer = NULL;
     }
-    
+
     s_initialized = false;
     ESP_LOGI(TAG, "Display module deinitialized");
-    
+
     return ESP_OK;
 }
 
@@ -267,7 +345,7 @@ esp_err_t dc_display_update(const dc_context_t *context)
     if (!s_initialized || !context) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     // Use UI integration to update display
     return dc_ui_integration_update_display(context);
 }
@@ -277,7 +355,7 @@ esp_err_t dc_display_show_message(const char *message, uint32_t duration_ms)
     if (!s_initialized || !message) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     // Use UI integration to show message
     return dc_ui_integration_show_message(message, duration_ms);
 }
@@ -287,7 +365,7 @@ esp_err_t dc_display_clear(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     // For UI integration, clearing would mean showing main screen
     return dc_ui_integration_show_main_screen();
-} 
+}

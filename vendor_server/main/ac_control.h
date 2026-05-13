@@ -1,4 +1,4 @@
-/* ac_control.h - AC profile compatibility facade over generic smart-home mesh node */
+/* ac_control.h - Compatibility facade over generic smart-home mesh node */
 
 #ifndef _AC_CONTROL_H_
 #define _AC_CONTROL_H_
@@ -42,6 +42,9 @@ struct esp_ble_mesh_key {
 typedef void (*ac_status_callback_t)(uint8_t value);
 
 esp_err_t ac_server_init(void);
+const sh_device_profile_t *ac_server_get_profile(void);
+esp_err_t ac_server_set_feature(uint16_t feature_id, int32_t value);
+esp_err_t ac_server_get_feature(uint16_t feature_id, sh_feature_state_t *state);
 esp_err_t ac_server_set_power(uint8_t power_state);
 esp_err_t ac_server_set_temperature(uint8_t temperature);
 esp_err_t ac_server_set_mode(uint8_t mode);

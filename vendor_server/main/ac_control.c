@@ -1,4 +1,4 @@
-/* ac_control.c - AC profile compatibility facade over generic smart-home mesh node */
+/* ac_control.c - Compatibility facade over generic smart-home mesh node */
 
 #include "ac_control.h"
 #include "board.h"
@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #include "esp_ble_mesh_networking_api.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,6 +14,17 @@
 static const char *TAG = "AC_NODE_FACADE";
 
 static esp_timer_handle_t s_restart_timer;
+
+static const sh_device_profile_t *get_configured_profile(void)
+{
+#if defined(CONFIG_SH_NODE_PROFILE_LIGHT) && CONFIG_SH_NODE_PROFILE_LIGHT
+    return sh_profile_light_get();
+#elif defined(CONFIG_SH_NODE_PROFILE_SWITCH) && CONFIG_SH_NODE_PROFILE_SWITCH
+    return sh_profile_switch_get();
+#else
+    return sh_profile_ac_get();
+#endif
+}
 
 static uint8_t get_feature_u8(uint16_t feature_id, uint8_t fallback)
 {
@@ -58,7 +70,7 @@ static void feature_changed_cb(uint16_t feature_id,
     (void)type;
     (void)value;
     (void)user_data;
-    ui_update_ac_status();
+    ui_update_node_status();
     board_led_temp_blink(128, 0, 128, 1, 400);
 }
 
@@ -80,7 +92,9 @@ static void reset_requested_cb(void *user_data)
 
 esp_err_t ac_server_init(void)
 {
-    ESP_LOGI(TAG, "Initializing AC profile through generic smart-home node");
+    const sh_device_profile_t *profile = get_configured_profile();
+    ESP_LOGI(TAG, "Initializing smart-home node profile 0x%04x (%s)",
+             profile->profile_id, profile->display_name);
 
     sh_node_callbacks_t callbacks = {
         .feature_changed_cb = feature_changed_cb,
@@ -88,7 +102,7 @@ esp_err_t ac_server_init(void)
         .reset_requested_cb = reset_requested_cb,
     };
 
-    esp_err_t err = sh_node_init(sh_profile_ac_get(), &callbacks);
+    esp_err_t err = sh_node_init(profile, &callbacks);
     if (err != ESP_OK) {
         board_led_operation(LED_STATE_ERROR);
         return err;
@@ -96,6 +110,21 @@ esp_err_t ac_server_init(void)
 
     board_led_operation(LED_STATE_PROV);
     return ESP_OK;
+}
+
+const sh_device_profile_t *ac_server_get_profile(void)
+{
+    return sh_node_get_profile();
+}
+
+esp_err_t ac_server_set_feature(uint16_t feature_id, int32_t value)
+{
+    return sh_node_set_feature(feature_id, value);
+}
+
+esp_err_t ac_server_get_feature(uint16_t feature_id, sh_feature_state_t *state)
+{
+    return sh_node_get_feature(feature_id, state);
 }
 
 esp_err_t ac_server_set_power(uint8_t power_state)

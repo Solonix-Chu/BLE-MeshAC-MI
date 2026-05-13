@@ -487,7 +487,7 @@ static void display_settings_menu(const dc_context_t *context)
     ESP_LOGI(TAG, "=== SETTINGS MENU ===");
 
     uint8_t param_count = (device->profile && device->profile->feature_count) ?
-        device->profile->feature_count : DC_PARAM_MAX;
+        device->profile->feature_count : DC_PARAM_LEGACY_COUNT;
 
     // Display all profile features with selection indicator
     for (int i = 0; i < param_count; i++) {
