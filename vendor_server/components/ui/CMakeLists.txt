@@ -35,3 +35,5 @@ idf_component_register(SRCS ${SRCS}
                        INCLUDE_DIRS ${COMPONENT_INCLUDE_DIRS}
                        REQUIRES lvgl
                       )
+
+target_compile_definitions(${COMPONENT_LIB} PUBLIC LV_LVGL_H_INCLUDE_SIMPLE)

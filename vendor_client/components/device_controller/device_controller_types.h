@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "smarthome_model.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,6 +72,7 @@ typedef enum {
  */
 typedef struct {
     dc_parameter_t param_id;
+    uint16_t feature_id;
     const char *name;
     dc_value_type_t value_type;
     union {
@@ -93,6 +95,9 @@ typedef struct {
     uint8_t device_id;
     const char *device_name;
     bool is_online;
+    const sh_device_profile_t *profile;
+    sh_feature_state_t feature_states[SH_MODEL_MAX_FEATURES];
+    uint8_t feature_state_count;
     struct {
         bool power;
         int32_t temperature;
@@ -140,4 +145,4 @@ typedef struct {
 
 #ifdef __cplusplus
 }
-#endif 
+#endif

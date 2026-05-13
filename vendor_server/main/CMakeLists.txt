@@ -5,4 +5,12 @@ set(srcs "main.c"
         "ui_update.c")
 
 idf_component_register(SRCS "${srcs}"
-                    INCLUDE_DIRS  ".")
+                    INCLUDE_DIRS  "."
+                    REQUIRES ui
+                             lvgl
+                             esp_lvgl_port
+                             led_strip
+                             smarthome_mesh
+                             smarthome_profiles
+                             smarthome_model
+                             smarthome_protocol)

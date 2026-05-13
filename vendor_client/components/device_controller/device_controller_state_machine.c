@@ -22,23 +22,27 @@ static const char* s_mode_options[] = {"Cool", "Heat", "Fan", "Dry", "Auto"};
 static const dc_param_config_t s_param_configs[DC_PARAM_MAX] = {
     [DC_PARAM_POWER] = {
         .param_id = DC_PARAM_POWER,
+        .feature_id = SH_FEATURE_ID_POWER,
         .name = "Power",
         .value_type = DC_VALUE_TYPE_BOOL,
     },
     [DC_PARAM_TEMPERATURE] = {
         .param_id = DC_PARAM_TEMPERATURE,
+        .feature_id = SH_FEATURE_ID_TEMPERATURE,
         .name = "Temperature",
         .value_type = DC_VALUE_TYPE_INT,
         .config.int_range = {.min = DEVICE_CONTROLLER_TEMP_MIN, .max = DEVICE_CONTROLLER_TEMP_MAX, .step = 1}
     },
     [DC_PARAM_FAN_SPEED] = {
         .param_id = DC_PARAM_FAN_SPEED,
+        .feature_id = SH_FEATURE_ID_FAN_SPEED,
         .name = "Fan Speed",
         .value_type = DC_VALUE_TYPE_ENUM,
         .config.enum_options = {.options = (const char*[]){"Low", "Medium", "High"}, .count = 3}
     },
     [DC_PARAM_MODE] = {
         .param_id = DC_PARAM_MODE,
+        .feature_id = SH_FEATURE_ID_MODE,
         .name = "Mode",
         .value_type = DC_VALUE_TYPE_ENUM,
         .config.enum_options = {.options = s_mode_options, .count = 5}
@@ -51,6 +55,8 @@ static void start_timeout_timer(void);
 static void stop_timeout_timer(void);
 static void change_state(dc_state_t new_state);
 static void update_display(void);
+static uint8_t get_device_parameter_count(uint8_t device_idx);
+static const sh_feature_def_t *get_device_feature_def(uint8_t device_idx, dc_parameter_t param);
 static int32_t get_parameter_value(uint8_t device_idx, dc_parameter_t param);
 static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_t value);
 static void adjust_value(dc_parameter_t param, int32_t *value, bool increment);
@@ -85,7 +91,7 @@ static void change_state(dc_state_t new_state)
 {
     dc_state_t old_state = s_context.current_state;
     s_context.current_state = new_state;
-    
+
     const char *old_state_str = old_state == DC_STATE_IDLE ? "IDLE" :
                                old_state == DC_STATE_MENU_NAVIGATE ? "MENU_NAVIGATE" :
                                old_state == DC_STATE_VALUE_ADJUST ? "VALUE_ADJUST" : "UNKNOWN";
@@ -93,19 +99,19 @@ static void change_state(dc_state_t new_state)
                                new_state == DC_STATE_MENU_NAVIGATE ? "MENU_NAVIGATE" :
                                new_state == DC_STATE_VALUE_ADJUST ? "VALUE_ADJUST" : "UNKNOWN";
     ESP_LOGI(TAG, "State change: %s -> %s", old_state_str, new_state_str);
-    
+
     // Call state change callback
     if (s_callbacks.state_change_cb) {
         s_callbacks.state_change_cb(old_state, new_state, s_callbacks.user_data);
     }
-    
+
     // Handle timeout timer
     if (new_state == DC_STATE_IDLE) {
         stop_timeout_timer();
     } else {
         start_timeout_timer();
     }
-    
+
     update_display();
 }
 
@@ -116,12 +122,43 @@ static void update_display(void)
     }
 }
 
+static uint8_t get_device_parameter_count(uint8_t device_idx)
+{
+    if (device_idx < s_device_count &&
+        s_devices[device_idx].profile &&
+        s_devices[device_idx].profile->feature_count > 0) {
+        return s_devices[device_idx].profile->feature_count;
+    }
+    return DC_PARAM_MAX;
+}
+
+static const sh_feature_def_t *get_device_feature_def(uint8_t device_idx, dc_parameter_t param)
+{
+    if (device_idx >= s_device_count) {
+        return NULL;
+    }
+    const dc_device_info_t *device = &s_devices[device_idx];
+    if (!device->profile || param >= device->profile->feature_count) {
+        return NULL;
+    }
+    return &device->profile->features[param];
+}
+
 static int32_t get_parameter_value(uint8_t device_idx, dc_parameter_t param)
 {
     if (device_idx >= s_device_count) {
         return 0;
     }
-    
+
+    const sh_feature_def_t *feature = get_device_feature_def(device_idx, param);
+    if (feature) {
+        const sh_feature_state_t *state = sh_model_find_const_state(
+            s_devices[device_idx].feature_states,
+            s_devices[device_idx].feature_state_count,
+            feature->feature_id);
+        return state ? state->value : feature->default_value;
+    }
+
     switch (param) {
         case DC_PARAM_POWER:
             return s_devices[device_idx].status.power ? 1 : 0;
@@ -142,9 +179,44 @@ static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_
         ESP_LOGW(TAG, "Invalid device index: %d (max: %d)", device_idx, s_device_count);
         return;
     }
-    
+
     ESP_LOGI(TAG, "Setting parameter %d to value %ld for device %d", param, value, device_idx);
-    
+
+    const sh_feature_def_t *feature = get_device_feature_def(device_idx, param);
+    if (feature) {
+        sh_feature_state_t *state = sh_model_find_state(
+            s_devices[device_idx].feature_states,
+            s_devices[device_idx].feature_state_count,
+            feature->feature_id);
+        if (!state && s_devices[device_idx].feature_state_count < SH_MODEL_MAX_FEATURES) {
+            state = &s_devices[device_idx].feature_states[s_devices[device_idx].feature_state_count++];
+            state->feature_id = feature->feature_id;
+            state->type = feature->type;
+        }
+        if (state) {
+            state->value = value;
+            state->type = feature->type;
+        }
+
+        switch (feature->feature_id) {
+            case SH_FEATURE_ID_POWER:
+                s_devices[device_idx].status.power = (value != 0);
+                break;
+            case SH_FEATURE_ID_TEMPERATURE:
+                s_devices[device_idx].status.temperature = value;
+                break;
+            case SH_FEATURE_ID_FAN_SPEED:
+                s_devices[device_idx].status.fan_speed = value;
+                break;
+            case SH_FEATURE_ID_MODE:
+                s_devices[device_idx].status.mode = value;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
     switch (param) {
         case DC_PARAM_POWER:
             s_devices[device_idx].status.power = (value != 0);
@@ -170,17 +242,52 @@ static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_
 
 static void adjust_value(dc_parameter_t param, int32_t *value, bool increment)
 {
+    const sh_feature_def_t *feature = get_device_feature_def(s_context.current_device_idx, param);
+    if (feature) {
+        int32_t old_value = *value;
+        switch (feature->type) {
+            case SH_FEATURE_TYPE_BOOL:
+                *value = *value ? 0 : 1;
+                break;
+            case SH_FEATURE_TYPE_INT: {
+                int32_t step = feature->constraints.step > 0 ? feature->constraints.step : 1;
+                *value += increment ? step : -step;
+                if (*value > feature->constraints.max) {
+                    *value = feature->constraints.max;
+                }
+                if (*value < feature->constraints.min) {
+                    *value = feature->constraints.min;
+                }
+                break;
+            }
+            case SH_FEATURE_TYPE_ENUM:
+                if (feature->constraints.enum_count > 0) {
+                    if (increment) {
+                        *value = (*value + 1) % feature->constraints.enum_count;
+                    } else {
+                        *value = (*value - 1 + feature->constraints.enum_count) % feature->constraints.enum_count;
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+        ESP_LOGI(TAG, "Profile feature 0x%04x adjusted: %ld -> %ld",
+                 feature->feature_id, old_value, *value);
+        return;
+    }
+
     const dc_param_config_t *config = &s_param_configs[param];
     int32_t old_value = *value;
-    
+
     ESP_LOGI(TAG, "Adjusting parameter %d: %ld -> ", param, old_value);
-    
+
     switch (config->value_type) {
         case DC_VALUE_TYPE_BOOL:
             *value = *value ? 0 : 1;
             ESP_LOGI(TAG, "Bool toggle: %ld -> %ld", old_value, *value);
             break;
-            
+
         case DC_VALUE_TYPE_INT:
             if (increment) {
                 *value += config->config.int_range.step;
@@ -193,22 +300,22 @@ static void adjust_value(dc_parameter_t param, int32_t *value, bool increment)
                     *value = config->config.int_range.min;
                 }
             }
-            ESP_LOGI(TAG, "Int adjust (%s): %ld -> %ld (range: %ld-%ld)", 
-                     increment ? "+" : "-", old_value, *value, 
+            ESP_LOGI(TAG, "Int adjust (%s): %ld -> %ld (range: %ld-%ld)",
+                     increment ? "+" : "-", old_value, *value,
                      config->config.int_range.min, config->config.int_range.max);
             break;
-            
+
         case DC_VALUE_TYPE_ENUM:
             if (increment) {
                 *value = (*value + 1) % config->config.enum_options.count;
             } else {
                 *value = (*value - 1 + config->config.enum_options.count) % config->config.enum_options.count;
             }
-            ESP_LOGI(TAG, "Enum adjust (%s): %ld -> %ld (count: %d)", 
-                     increment ? "next" : "prev", old_value, *value, 
+            ESP_LOGI(TAG, "Enum adjust (%s): %ld -> %ld (count: %d)",
+                     increment ? "next" : "prev", old_value, *value,
                      config->config.enum_options.count);
             break;
-            
+
         default:
             ESP_LOGW(TAG, "Unknown value type: %d", config->value_type);
             break;
@@ -221,35 +328,35 @@ esp_err_t dc_state_machine_init(const dc_callbacks_t *callbacks)
         ESP_LOGW(TAG, "State machine already initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     if (!callbacks) {
         ESP_LOGE(TAG, "Callbacks cannot be NULL");
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     // Copy callbacks
     memcpy(&s_callbacks, callbacks, sizeof(dc_callbacks_t));
-    
+
     // Initialize context
     memset(&s_context, 0, sizeof(dc_context_t));
     s_context.current_state = DC_STATE_IDLE;
-    
+
     // Create timeout timer
     esp_timer_create_args_t timer_args = {
         .callback = timeout_timer_callback,
         .arg = NULL,
         .name = "dc_timeout"
     };
-    
+
     esp_err_t ret = esp_timer_create(&timer_args, &s_timeout_timer);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create timeout timer: %s", esp_err_to_name(ret));
         return ret;
     }
-    
+
     s_initialized = true;
     ESP_LOGI(TAG, "State machine initialized");
-    
+
     return ESP_OK;
 }
 
@@ -258,21 +365,21 @@ esp_err_t dc_state_machine_deinit(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     // Stop and delete timer
     if (s_timeout_timer) {
         esp_timer_stop(s_timeout_timer);
         esp_timer_delete(s_timeout_timer);
         s_timeout_timer = NULL;
     }
-    
+
     // Clear context
     memset(&s_context, 0, sizeof(dc_context_t));
     memset(&s_callbacks, 0, sizeof(dc_callbacks_t));
-    
+
     s_initialized = false;
     ESP_LOGI(TAG, "State machine deinitialized");
-    
+
     return ESP_OK;
 }
 
@@ -282,9 +389,9 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
         ESP_LOGE(TAG, "State machine not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     ESP_LOGI(TAG, "Processing event %d in state %d", event, s_context.current_state);
-    
+
     switch (s_context.current_state) {
         case DC_STATE_IDLE:
             switch (event) {
@@ -293,13 +400,13 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     s_context.current_selection = 0; // Start with first parameter (Power)
                     change_state(DC_STATE_MENU_NAVIGATE);
                     break;
-                    
+
                 case DC_EVENT_CENTER_LONG_PRESS:
                     // 切换当前设备的连接状态（断开/重连）
                     if (s_device_count > 0 && s_callbacks.param_change_cb) {
-                        ESP_LOGI(TAG, "Long press detected - toggling device connection for device %d", 
+                        ESP_LOGI(TAG, "Long press detected - toggling device connection for device %d",
                                 s_context.current_device_idx);
-                        
+
                         // 调用参数变化回调，使用特殊的"连接切换"参数
                         // 这里我们定义一个特殊的参数值来表示切换连接状态
                         esp_err_t ret = s_callbacks.param_change_cb(
@@ -313,7 +420,7 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                         }
                     }
                     break;
-                    
+
                 case DC_EVENT_UP_PRESS:
                 case DC_EVENT_LEFT_PRESS:
 #if DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
@@ -324,7 +431,7 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     }
 #endif
                     break;
-                    
+
                 case DC_EVENT_DOWN_PRESS:
                 case DC_EVENT_RIGHT_PRESS:
 #if DEVICE_CONTROLLER_ENABLE_MULTI_DEVICE
@@ -335,53 +442,56 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     }
 #endif
                     break;
-                    
+
                 default:
                     // Ignore other events in idle state
                     break;
             }
             break;
-            
+
         case DC_STATE_MENU_NAVIGATE:
             switch (event) {
                 case DC_EVENT_UP_PRESS:
                 case DC_EVENT_LEFT_PRESS:
                     // Cycle to previous parameter
-                    s_context.current_selection = (s_context.current_selection - 1 + DC_PARAM_MAX) % DC_PARAM_MAX;
+                    s_context.current_selection = (s_context.current_selection - 1 +
+                        get_device_parameter_count(s_context.current_device_idx)) %
+                        get_device_parameter_count(s_context.current_device_idx);
                     ESP_LOGI(TAG, "Menu selection changed to parameter %d", s_context.current_selection);
                     update_display();
                     start_timeout_timer(); // Reset timeout
                     break;
-                    
+
                 case DC_EVENT_DOWN_PRESS:
                 case DC_EVENT_RIGHT_PRESS:
                     // Cycle to next parameter
-                    s_context.current_selection = (s_context.current_selection + 1) % DC_PARAM_MAX;
+                    s_context.current_selection = (s_context.current_selection + 1) %
+                        get_device_parameter_count(s_context.current_device_idx);
                     ESP_LOGI(TAG, "Menu selection changed to parameter %d", s_context.current_selection);
                     update_display();
                     start_timeout_timer(); // Reset timeout
                     break;
-                    
+
                 case DC_EVENT_CENTER_SINGLE_CLICK:
                     // Enter value adjustment
                     s_context.selected_parameter = (dc_parameter_t)s_context.current_selection;
                     s_context.editing_value = get_parameter_value(s_context.current_device_idx, s_context.selected_parameter);
-                    ESP_LOGI(TAG, "Entering value adjustment for parameter %d, current value: %ld", 
+                    ESP_LOGI(TAG, "Entering value adjustment for parameter %d, current value: %ld",
                              s_context.selected_parameter, s_context.editing_value);
                     change_state(DC_STATE_VALUE_ADJUST);
                     break;
-                    
+
                 case DC_EVENT_CENTER_DOUBLE_CLICK:
                 case DC_EVENT_TIMEOUT:
                     // Return to idle
                     change_state(DC_STATE_IDLE);
                     break;
-                    
+
                 default:
                     break;
             }
             break;
-            
+
         case DC_STATE_VALUE_ADJUST:
             switch (event) {
                 case DC_EVENT_UP_PRESS:
@@ -391,7 +501,7 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     update_display();
                     start_timeout_timer(); // Reset timeout
                     break;
-                    
+
                 case DC_EVENT_DOWN_PRESS:
                 case DC_EVENT_RIGHT_PRESS:
                     // Adjust value (decrement)
@@ -399,11 +509,11 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                     update_display();
                     start_timeout_timer(); // Reset timeout
                     break;
-                    
+
                 case DC_EVENT_CENTER_SINGLE_CLICK:
                     // Apply value and return to idle
                     set_parameter_value(s_context.current_device_idx, s_context.selected_parameter, s_context.editing_value);
-                    
+
                     // Call parameter change callback
                     if (s_callbacks.param_change_cb) {
                         esp_err_t ret = s_callbacks.param_change_cb(
@@ -416,26 +526,26 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
                             ESP_LOGW(TAG, "Parameter change callback failed: %s", esp_err_to_name(ret));
                         }
                     }
-                    
+
                     change_state(DC_STATE_IDLE);
                     break;
-                    
+
                 case DC_EVENT_CENTER_DOUBLE_CLICK:
                 case DC_EVENT_TIMEOUT:
                     // Discard changes and return to idle
                     change_state(DC_STATE_IDLE);
                     break;
-                    
+
                 default:
                     break;
             }
             break;
-            
+
         default:
             ESP_LOGE(TAG, "Invalid state: %d", s_context.current_state);
             return ESP_ERR_INVALID_STATE;
     }
-    
+
     return ESP_OK;
 }
 
@@ -454,7 +564,7 @@ esp_err_t dc_state_machine_force_idle(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     change_state(DC_STATE_IDLE);
     return ESP_OK;
 }
@@ -464,15 +574,15 @@ esp_err_t dc_state_machine_set_device_info(uint8_t device_idx, const dc_device_i
     if (device_idx >= DEVICE_CONTROLLER_MAX_DEVICES || !device_info) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     memcpy(&s_devices[device_idx], device_info, sizeof(dc_device_info_t));
-    
+
     if (device_idx >= s_device_count) {
         s_device_count = device_idx + 1;
     }
-    
+
     ESP_LOGI(TAG, "Device %d info updated: %s", device_idx, device_info->device_name);
-    
+
     return ESP_OK;
 }
 
@@ -481,11 +591,11 @@ const dc_device_info_t* dc_state_machine_get_device_info(uint8_t device_idx)
     if (device_idx >= s_device_count) {
         return NULL;
     }
-    
+
     return &s_devices[device_idx];
 }
 
 uint8_t dc_state_machine_get_device_count(void)
 {
     return s_device_count;
-} 
+}
