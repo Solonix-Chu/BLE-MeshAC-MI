@@ -1,195 +1,193 @@
 /*
- * UI Update Module for Smart-home Server
- * Handles display updates for the currently registered node profile.
+ * UI Update Module for Smart-home Server.
+ * The server renders the same abstract 128x64 frame produced by smarthome_ui
+ * as the client, so both sides stay visually consistent.
  */
 
 #include "ui_update.h"
+#include <stdio.h>
+#include <string.h>
+#include "ac_control.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "gui_guider.h"
-#include "ac_control.h"
-#include <stdio.h>
+#include "smarthome_ui.h"
 
 static const char *TAG = "UI_UPDATE";
 
 extern lv_ui guider_ui;
 
-/* Helper functions to convert AC state to display strings */
-static const char* get_mode_string(uint8_t mode)
+static lv_obj_t *s_frame_labels[SH_UI_MAX_COMMANDS];
+static lv_obj_t *s_bar_bg;
+static lv_obj_t *s_bar_fill;
+
+static const lv_font_t *map_font(sh_ui_font_t font)
 {
-    switch (mode) {
-        case AC_MODE_COOL:
-            return "COOL";
-        case AC_MODE_HEAT:
-            return "HEAT";
-        case AC_MODE_FAN:
-            return "FAN";
-        case AC_MODE_DRY:
-            return "DRY";
-        case AC_MODE_AUTO:
-            return "AUTO";
+    switch (font) {
+        case SH_UI_FONT_LARGE:
+        case SH_UI_FONT_MEDIUM:
+            return &lv_font_Tanker_18;
+        case SH_UI_FONT_SMALL:
         default:
-            return "COOL";
+            return &lv_font_Tanker_16;
     }
 }
 
-static void update_fan_speed_display(uint8_t fan_speed)
+static lv_text_align_t map_align(sh_ui_align_t align)
+{
+    switch (align) {
+        case SH_UI_ALIGN_CENTER:
+            return LV_TEXT_ALIGN_CENTER;
+        case SH_UI_ALIGN_RIGHT:
+            return LV_TEXT_ALIGN_RIGHT;
+        case SH_UI_ALIGN_LEFT:
+        default:
+            return LV_TEXT_ALIGN_LEFT;
+    }
+}
+
+static void hide_generated_controls(void)
+{
+    lv_obj_t *controls[] = {
+        guider_ui.screen_1_canvas_1,
+        guider_ui.screen_1_TempNum,
+        guider_ui.screen_1_DeviceIndex,
+        guider_ui.screen_1_TempUnit,
+        guider_ui.screen_1_OnOff,
+        guider_ui.screen_1_Mode,
+        guider_ui.screen_1_HeartEmpty,
+        guider_ui.screen_1_HeartReal,
+        guider_ui.screen_1_speed1,
+        guider_ui.screen_1_speed2,
+        guider_ui.screen_1_speed3,
+    };
+
+    for (uint8_t i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
+        if (controls[i]) {
+            lv_obj_add_flag(controls[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static lv_obj_t *get_frame_label(uint8_t index)
+{
+    if (index >= SH_UI_MAX_COMMANDS || !guider_ui.screen_1) {
+        return NULL;
+    }
+    if (!s_frame_labels[index]) {
+        s_frame_labels[index] = lv_label_create(guider_ui.screen_1);
+        lv_obj_set_style_text_color(s_frame_labels[index], lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(s_frame_labels[index], 0, 0);
+        lv_obj_set_style_pad_all(s_frame_labels[index], 0, 0);
+    }
+    return s_frame_labels[index];
+}
+
+static void ensure_bar_objects(void)
 {
     if (!guider_ui.screen_1) {
         return;
     }
+    if (!s_bar_bg) {
+        s_bar_bg = lv_obj_create(guider_ui.screen_1);
+        lv_obj_set_style_border_color(s_bar_bg, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_border_width(s_bar_bg, 1, 0);
+        lv_obj_set_style_bg_color(s_bar_bg, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(s_bar_bg, 255, 0);
+        lv_obj_set_style_radius(s_bar_bg, 0, 0);
+        lv_obj_set_scrollbar_mode(s_bar_bg, LV_SCROLLBAR_MODE_OFF);
+    }
+    if (!s_bar_fill) {
+        s_bar_fill = lv_obj_create(guider_ui.screen_1);
+        lv_obj_set_style_border_width(s_bar_fill, 0, 0);
+        lv_obj_set_style_bg_color(s_bar_fill, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(s_bar_fill, 255, 0);
+        lv_obj_set_style_radius(s_bar_fill, 0, 0);
+        lv_obj_set_scrollbar_mode(s_bar_fill, LV_SCROLLBAR_MODE_OFF);
+    }
+}
 
-    // Hide all fan speed icons first
-    if (guider_ui.screen_1_speed1) {
-        lv_obj_add_flag(guider_ui.screen_1_speed1, LV_OBJ_FLAG_HIDDEN);
+static void hide_frame_objects(void)
+{
+    for (uint8_t i = 0; i < SH_UI_MAX_COMMANDS; i++) {
+        if (s_frame_labels[i]) {
+            lv_obj_add_flag(s_frame_labels[i], LV_OBJ_FLAG_HIDDEN);
+        }
     }
-    if (guider_ui.screen_1_speed2) {
-        lv_obj_add_flag(guider_ui.screen_1_speed2, LV_OBJ_FLAG_HIDDEN);
+    if (s_bar_bg) {
+        lv_obj_add_flag(s_bar_bg, LV_OBJ_FLAG_HIDDEN);
     }
-    if (guider_ui.screen_1_speed3) {
-        lv_obj_add_flag(guider_ui.screen_1_speed3, LV_OBJ_FLAG_HIDDEN);
+    if (s_bar_fill) {
+        lv_obj_add_flag(s_bar_fill, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void render_frame(const sh_ui_frame_t *frame)
+{
+    if (!frame || !guider_ui.screen_1) {
+        return;
     }
 
-    // Show the appropriate fan speed icon
-    switch (fan_speed) {
-        case AC_FAN_SPEED_LOW:
-            if (guider_ui.screen_1_speed1) {
-                lv_obj_clear_flag(guider_ui.screen_1_speed1, LV_OBJ_FLAG_HIDDEN);
+    hide_generated_controls();
+    hide_frame_objects();
+
+    uint8_t label_index = 0;
+    for (uint8_t i = 0; i < frame->command_count; i++) {
+        const sh_ui_draw_cmd_t *cmd = &frame->commands[i];
+        if (cmd->type == SH_UI_CMD_TEXT) {
+            lv_obj_t *label = get_frame_label(label_index++);
+            if (!label) {
+                continue;
             }
-            break;
-        case AC_FAN_SPEED_MEDIUM:
-            if (guider_ui.screen_1_speed2) {
-                lv_obj_clear_flag(guider_ui.screen_1_speed2, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(label, cmd->x, cmd->y);
+            lv_obj_set_size(label, cmd->w, cmd->h);
+            lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+            lv_label_set_text(label, cmd->text.text);
+            lv_obj_set_style_text_font(label, map_font(cmd->text.font), 0);
+            lv_obj_set_style_text_align(label, map_align(cmd->text.align), 0);
+        } else if (cmd->type == SH_UI_CMD_BAR) {
+            ensure_bar_objects();
+            if (!s_bar_bg || !s_bar_fill) {
+                continue;
             }
-            break;
-        case AC_FAN_SPEED_HIGH:
-            if (guider_ui.screen_1_speed3) {
-                lv_obj_clear_flag(guider_ui.screen_1_speed3, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_bar_bg, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_bar_fill, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(s_bar_bg, cmd->x, cmd->y);
+            lv_obj_set_size(s_bar_bg, cmd->w, cmd->h);
+            int16_t fill_w = ((cmd->w - 2) * cmd->bar.percent) / 100;
+            if (fill_w < 1 && cmd->bar.percent > 0) {
+                fill_w = 1;
             }
-            break;
-        default:
-            // For AUTO mode, all icons remain hidden
-            break;
-    }
-}
-
-static void hide_fan_speed_display(void)
-{
-    if (guider_ui.screen_1_speed1) {
-        lv_obj_add_flag(guider_ui.screen_1_speed1, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (guider_ui.screen_1_speed2) {
-        lv_obj_add_flag(guider_ui.screen_1_speed2, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (guider_ui.screen_1_speed3) {
-        lv_obj_add_flag(guider_ui.screen_1_speed3, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-static bool read_feature_value(uint16_t feature_id, int32_t *value)
-{
-    sh_feature_state_t state;
-    if (ac_server_get_feature(feature_id, &state) == ESP_OK) {
-        if (value) {
-            *value = state.value;
-        }
-        return true;
-    }
-    return false;
-}
-
-static const sh_feature_def_t *find_first_non_power_feature(const sh_device_profile_t *profile)
-{
-    if (!profile || !profile->features) {
-        return NULL;
-    }
-
-    for (uint8_t i = 0; i < profile->feature_count; i++) {
-        if (profile->features[i].feature_id != SH_FEATURE_ID_POWER) {
-            return &profile->features[i];
-        }
-    }
-    return NULL;
-}
-
-static const char *format_feature_value(const sh_feature_def_t *feature,
-                                        int32_t value,
-                                        char *buf,
-                                        size_t buf_len)
-{
-    if (!feature) {
-        return "---";
-    }
-
-    switch (feature->type) {
-        case SH_FEATURE_TYPE_BOOL:
-            return value ? "ON" : "OFF";
-        case SH_FEATURE_TYPE_ENUM:
-            if (value >= 0 && value < feature->constraints.enum_count &&
-                feature->constraints.enum_labels) {
-                return feature->constraints.enum_labels[value];
-            }
-            snprintf(buf, buf_len, "%ld", value);
-            return buf;
-        case SH_FEATURE_TYPE_INT:
-            snprintf(buf, buf_len, "%ld", value);
-            return buf;
-        default:
-            return "---";
-    }
-}
-
-static void update_ac_profile_locked(void)
-{
-    int32_t temperature = 25;
-    int32_t mode = AC_MODE_COOL;
-    int32_t fan_speed = AC_FAN_SPEED_LOW;
-
-    read_feature_value(SH_FEATURE_ID_TEMPERATURE, &temperature);
-    read_feature_value(SH_FEATURE_ID_MODE, &mode);
-    read_feature_value(SH_FEATURE_ID_FAN_SPEED, &fan_speed);
-
-    if (guider_ui.screen_1_TempNum) {
-        char temp_str[8];
-        snprintf(temp_str, sizeof(temp_str), "%ld", temperature);
-        lv_label_set_text(guider_ui.screen_1_TempNum, temp_str);
-    }
-
-    if (guider_ui.screen_1_Mode) {
-        lv_label_set_text(guider_ui.screen_1_Mode, get_mode_string((uint8_t)mode));
-    }
-
-    update_fan_speed_display((uint8_t)fan_speed);
-}
-
-static void update_generic_profile_locked(const sh_device_profile_t *profile)
-{
-    const sh_feature_def_t *feature = find_first_non_power_feature(profile);
-    int32_t value = 0;
-    char value_buf[16];
-
-    hide_fan_speed_display();
-
-    if (feature && read_feature_value(feature->feature_id, &value)) {
-        if (guider_ui.screen_1_TempNum) {
-            lv_label_set_text(guider_ui.screen_1_TempNum,
-                              format_feature_value(feature, value, value_buf, sizeof(value_buf)));
-        }
-        if (guider_ui.screen_1_Mode) {
-            lv_label_set_text(guider_ui.screen_1_Mode, feature->name ? feature->name : "Feature");
-        }
-    } else {
-        if (guider_ui.screen_1_TempNum) {
-            lv_label_set_text(guider_ui.screen_1_TempNum, "--");
-        }
-        if (guider_ui.screen_1_Mode) {
-            lv_label_set_text(guider_ui.screen_1_Mode,
-                              profile && profile->display_name ? profile->display_name : "Node");
+            lv_obj_set_pos(s_bar_fill, cmd->x + 1, cmd->y + 1);
+            lv_obj_set_size(s_bar_fill, fill_w, cmd->h > 2 ? cmd->h - 2 : 1);
         }
     }
 }
 
-/* Update the smart-home node status display */
+static size_t collect_states(const sh_device_profile_t *profile,
+                             sh_feature_state_t *states,
+                             size_t max_states)
+{
+    if (!profile || !states || max_states == 0) {
+        return 0;
+    }
+
+    size_t count = 0;
+    for (uint8_t i = 0; i < profile->feature_count && count < max_states; i++) {
+        sh_feature_state_t state = {
+            .feature_id = profile->features[i].feature_id,
+            .type = profile->features[i].type,
+            .value = profile->features[i].default_value,
+        };
+        ac_server_get_feature(profile->features[i].feature_id, &state);
+        states[count++] = state;
+    }
+    return count;
+}
+
 esp_err_t ui_update_node_status(void)
 {
     if (!guider_ui.screen_1) {
@@ -198,122 +196,55 @@ esp_err_t ui_update_node_status(void)
     }
 
     const sh_device_profile_t *profile = ac_server_get_profile();
+    sh_feature_state_t states[SH_MODEL_MAX_FEATURES];
+    size_t state_count = collect_states(profile, states, SH_MODEL_MAX_FEATURES);
 
-    // Lock LVGL before making changes
+    sh_ui_context_t context = {
+        .view = SH_UI_VIEW_SUMMARY,
+        .device_name = profile && profile->display_name ? profile->display_name : "Node",
+        .is_online = ac_server_is_connected(),
+    };
+    sh_ui_frame_t frame;
+    esp_err_t err = sh_ui_build_frame(profile, states, state_count, &context, &frame);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to build UI frame: %s", esp_err_to_name(err));
+        return err;
+    }
+
     if (!lvgl_port_lock(100)) {
         ESP_LOGE(TAG, "Failed to acquire LVGL mutex");
         return ESP_ERR_TIMEOUT;
     }
-
-    if (guider_ui.screen_1_DeviceIndex && profile && profile->display_name) {
-        lv_label_set_text(guider_ui.screen_1_DeviceIndex, profile->display_name);
-    }
-
-    // Update power status
-    if (guider_ui.screen_1_OnOff) {
-        int32_t power = 0;
-        if (read_feature_value(SH_FEATURE_ID_POWER, &power)) {
-            lv_label_set_text(guider_ui.screen_1_OnOff, power ? "ON" : "OFF");
-        } else {
-            lv_label_set_text(guider_ui.screen_1_OnOff, "--");
-        }
-    }
-
-    if (profile && profile->profile_id == SH_PROFILE_ID_AC) {
-        update_ac_profile_locked();
-    } else {
-        update_generic_profile_locked(profile);
-    }
-
+    render_frame(&frame);
     lvgl_port_unlock();
-
-    ESP_LOGD(TAG, "Node status updated for profile 0x%04x (%s)",
-             profile ? profile->profile_id : 0,
-             profile && profile->display_name ? profile->display_name : "unknown");
 
     return ESP_OK;
 }
 
-/* Update the air conditioner status display */
 esp_err_t ui_update_ac_status(void)
 {
     return ui_update_node_status();
 }
 
-/* Update connection status indicator (heartbeat) */
 esp_err_t ui_update_connection_status(bool is_connected)
 {
-    if (!guider_ui.screen_1) {
-        ESP_LOGW(TAG, "Screen not available for update");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // Lock LVGL before making changes
-    if (!lvgl_port_lock(100)) {
-        ESP_LOGE(TAG, "Failed to acquire LVGL mutex");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    // Update heart icon based on connection status
-    if (guider_ui.screen_1_HeartReal && guider_ui.screen_1_HeartEmpty) {
-        if (is_connected) {
-            // Show filled heart (connected)
-            lv_obj_clear_flag(guider_ui.screen_1_HeartReal, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(guider_ui.screen_1_HeartEmpty, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            // Show empty heart (disconnected)
-            lv_obj_add_flag(guider_ui.screen_1_HeartReal, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(guider_ui.screen_1_HeartEmpty, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
-    lvgl_port_unlock();
-
-    ESP_LOGD(TAG, "Connection status updated: %s", is_connected ? "Connected" : "Disconnected");
-
-    return ESP_OK;
+    (void)is_connected;
+    return ui_update_node_status();
 }
 
-/* Set device name/index display */
-esp_err_t ui_update_device_name(const char* device_name)
+esp_err_t ui_update_device_name(const char *device_name)
 {
-    if (!device_name || !guider_ui.screen_1 || !guider_ui.screen_1_DeviceIndex) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // Lock LVGL before making changes
-    if (!lvgl_port_lock(100)) {
-        ESP_LOGE(TAG, "Failed to acquire LVGL mutex");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    lv_label_set_text(guider_ui.screen_1_DeviceIndex, device_name);
-
-    lvgl_port_unlock();
-
-    ESP_LOGD(TAG, "Device name updated to: %s", device_name);
-
-    return ESP_OK;
+    (void)device_name;
+    return ui_update_node_status();
 }
 
-/* Initialize UI with initial node state */
 esp_err_t ui_update_init(void)
 {
     ESP_LOGI(TAG, "Initializing UI update module");
-
-    // Wait a bit for UI to be fully set up
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Set initial device name (before provisioning)
-    ui_update_device_name("Unprovisioned");
-
-    // Update with current profile status
-    ui_update_node_status();
-
-    // Set initial connection status as disconnected
-    ui_update_connection_status(false);
-
+    esp_err_t err = ui_update_node_status();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Initial UI update deferred: %s", esp_err_to_name(err));
+    }
     ESP_LOGI(TAG, "UI update module initialized");
-
     return ESP_OK;
 }

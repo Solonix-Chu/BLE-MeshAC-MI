@@ -61,6 +61,12 @@ menu "Example Configuration"
         config SH_NODE_PROFILE_SWITCH
             bool "Switch"
 
+        config SH_NODE_PROFILE_TV
+            bool "TV"
+
+        config SH_NODE_PROFILE_CURTAIN
+            bool "Curtain"
+
     endchoice
 
 endmenu

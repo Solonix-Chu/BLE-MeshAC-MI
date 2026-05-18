@@ -16,6 +16,8 @@ esp_err_t sh_store_save_feature(uint16_t profile_id, uint16_t feature_id, int32_
 esp_err_t sh_store_load_feature(uint16_t profile_id, uint16_t feature_id, int32_t *value);
 esp_err_t sh_store_save_profile_blob(uint16_t profile_id, const uint8_t *blob, size_t len);
 esp_err_t sh_store_load_profile_blob(uint16_t profile_id, uint8_t *blob, size_t max_len, size_t *len);
+esp_err_t sh_store_save_active_profile(uint16_t profile_id);
+esp_err_t sh_store_load_active_profile(uint16_t *profile_id);
 esp_err_t sh_store_clear_profile(uint16_t profile_id);
 
 #ifdef __cplusplus

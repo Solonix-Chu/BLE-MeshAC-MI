@@ -16,6 +16,11 @@ static void make_profile_key(char *buf, size_t len, uint16_t profile_id)
     snprintf(buf, len, "p%04x", profile_id);
 }
 
+static const char *active_profile_key(void)
+{
+    return "active_prof";
+}
+
 esp_err_t sh_store_init(const char *nvs_namespace)
 {
     esp_err_t err = nvs_flash_init();
@@ -117,6 +122,39 @@ esp_err_t sh_store_load_profile_blob(uint16_t profile_id, uint8_t *blob, size_t 
             *len = required;
         }
     }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t sh_store_save_active_profile(uint16_t profile_id)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(s_namespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_u16(handle, active_profile_key(), profile_id);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t sh_store_load_active_profile(uint16_t *profile_id)
+{
+    if (!profile_id) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(s_namespace, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_get_u16(handle, active_profile_key(), profile_id);
     nvs_close(handle);
     return err;
 }

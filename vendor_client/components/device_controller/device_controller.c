@@ -49,6 +49,7 @@ static void sync_all_devices_status(void);
 static uint16_t get_device_addr_by_index(uint8_t index);
 static uint16_t get_feature_id_for_device_param(uint8_t device_id, dc_parameter_t param);
 static const sh_feature_def_t *get_feature_def_for_device_param(uint8_t device_id, dc_parameter_t param);
+static const char *get_builtin_profile_name(int32_t index);
 
 // Button event handler
 static void button_event_handler(dc_event_t event, void *user_data)
@@ -134,6 +135,9 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
                         case DC_PARAM_FAN_SPEED:
                             current_value = device->status.fan_speed;
                             break;
+                        case DC_PARAM_DEVICE_TYPE:
+                            current_value = context->editing_value;
+                            break;
                         default:
                             break;
                     }
@@ -165,6 +169,10 @@ static void state_change_handler(dc_state_t old_state, dc_state_t new_state, voi
                                         (context->editing_value == 1) ? "HEAT" :
                                         (context->editing_value == 2) ? "FAN" :
                                         (context->editing_value == 3) ? "DRY" : "AUTO";
+                            break;
+                        case DC_PARAM_DEVICE_TYPE:
+                            param_name = "Device Type";
+                            param_value = get_builtin_profile_name(context->editing_value);
                             break;
                         default:
                             param_name = "Unknown";
@@ -209,6 +217,42 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
 
     uint16_t feature_id = get_feature_id_for_device_param(device_id, param);
     const sh_feature_def_t *feature = get_feature_def_for_device_param(device_id, param);
+
+    if (param == DC_PARAM_DEVICE_TYPE) {
+        uint8_t actual_device_count = ac_get_device_count();
+        if (device_id >= actual_device_count) {
+            ESP_LOGW(TAG, "Profile selection is only supported for real devices");
+            dc_ui_integration_show_message("TYPE NOT SUPPORTED", 1000);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        const sh_device_profile_t *profile = sh_profiles_get_builtin_by_index((uint8_t)value);
+        if (!profile) {
+            ESP_LOGW(TAG, "Unknown built-in profile index: %ld", value);
+            dc_ui_integration_show_message("TYPE ERROR", 1000);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        uint16_t device_addr = get_device_addr_by_index(device_id);
+        if (device_addr == ESP_BLE_MESH_ADDR_UNASSIGNED) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        ret = sh_client_set_profile(device_addr, profile);
+        if (ret == ESP_OK) {
+            snprintf(msg, sizeof(msg), "Type: %s", profile->display_name);
+            dc_ui_integration_show_message("TYPE SET OK", 1000);
+            ESP_LOGI(TAG, "Successfully sent profile %s to device 0x%04X",
+                     profile->display_name, device_addr);
+            sync_device_info_from_ac_control();
+            sync_single_device_status(device_addr);
+        } else {
+            dc_ui_integration_show_message("TYPE SET ERROR", 1000);
+            ESP_LOGE(TAG, "Failed to send profile %s to device 0x%04X: %s",
+                     profile->display_name, device_addr, esp_err_to_name(ret));
+        }
+        return ret;
+    }
 
     // 检查是否为虚拟"All Device"群控
     uint8_t actual_device_count = ac_get_device_count();
@@ -534,8 +578,6 @@ static void ac_device_online_callback(uint16_t device_addr, bool is_online)
                 // If device came online, sync its status
                 if (is_online) {
                     ESP_LOGI(TAG, "Device 0x%04X came online, syncing status...", device_addr);
-                    // Add a small delay to ensure the device is ready
-                    vTaskDelay(pdMS_TO_TICKS(500));
                     sync_single_device_status(device_addr);
                 }
             }
@@ -547,19 +589,19 @@ static void ac_device_online_callback(uint16_t device_addr, bool is_online)
 // AC device provisioned callback
 static void ac_device_provisioned_callback(uint16_t device_addr)
 {
-    ESP_LOGI(TAG, "New AC device 0x%04X provisioned!", device_addr);
+    ESP_LOGI(TAG, "Smart-home device 0x%04X provisioned/profile updated", device_addr);
+
+    bool has_profile = ac_get_device_info_by_addr(device_addr, &s_sync_device_info) == ESP_OK &&
+        s_sync_device_info.profile && s_sync_device_info.profile->feature_count > 0;
 
     // Refresh device list and reinitialize
     sync_device_info_from_ac_control();
 
-    // Show message to user
-    dc_ui_integration_show_message("New Device", 2000);
-
-    // Sync status of the newly provisioned device
-    ESP_LOGI(TAG, "New device 0x%04X provisioned, syncing status...", device_addr);
-    // Add delay to ensure device is fully ready after provisioning
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    sync_single_device_status(device_addr);
+    if (!has_profile) {
+        dc_ui_integration_show_message("New Device", 2000);
+        ESP_LOGI(TAG, "New device 0x%04X profile not loaded yet, requesting profile", device_addr);
+        sh_client_get_profile(device_addr);
+    }
 }
 
 // Sync device information from AC control module
@@ -600,34 +642,8 @@ static void sync_single_device_status(uint16_t device_addr)
         return;
     }
 
-    // Fallback for devices whose profile has not been discovered yet.
-    esp_err_t ret;
-
-    ret = ac_client_get_power(device_addr);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to request power status from 0x%04X: %s",
-                device_addr, esp_err_to_name(ret));
-    }
-
-    ret = ac_client_get_temperature(device_addr);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to request temperature status from 0x%04X: %s",
-                device_addr, esp_err_to_name(ret));
-    }
-
-    ret = ac_client_get_mode(device_addr);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to request mode status from 0x%04X: %s",
-                device_addr, esp_err_to_name(ret));
-    }
-
-    ret = ac_client_get_fan_speed(device_addr);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to request fan speed status from 0x%04X: %s",
-                device_addr, esp_err_to_name(ret));
-    }
-
-    ESP_LOGI(TAG, "Status sync requests sent for device 0x%04X", device_addr);
+    ESP_LOGI(TAG, "Profile not loaded for 0x%04X, requesting profile first", device_addr);
+    sh_client_get_profile(device_addr);
 }
 
 // Sync all online devices status
@@ -653,7 +669,7 @@ static void sync_all_devices_status(void)
 
 static uint16_t get_feature_id_for_device_param(uint8_t device_id, dc_parameter_t param)
 {
-    if (param == DC_PARAM_ACTION) {
+    if (param == DC_PARAM_ACTION || param == DC_PARAM_DEVICE_TYPE) {
         return 0;
     }
 
@@ -683,6 +699,12 @@ static const sh_feature_def_t *get_feature_def_for_device_param(uint8_t device_i
         return &device->profile->features[param];
     }
     return NULL;
+}
+
+static const char *get_builtin_profile_name(int32_t index)
+{
+    const sh_device_profile_t *profile = sh_profiles_get_builtin_by_index((uint8_t)index);
+    return profile && profile->display_name ? profile->display_name : "Profile";
 }
 
 // Get device address by index

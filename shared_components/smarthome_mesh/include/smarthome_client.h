@@ -63,6 +63,7 @@ bool sh_client_is_device_online(uint16_t addr);
 bool sh_client_is_device_set_cmd_responsive(uint16_t addr);
 
 esp_err_t sh_client_get_profile(uint16_t addr);
+esp_err_t sh_client_set_profile(uint16_t addr, const sh_device_profile_t *profile);
 esp_err_t sh_client_get_feature(uint16_t addr, uint16_t feature_id);
 esp_err_t sh_client_set_feature(uint16_t addr, uint16_t feature_id, int32_t value);
 esp_err_t sh_client_group_set_feature(uint16_t feature_id, int32_t value);

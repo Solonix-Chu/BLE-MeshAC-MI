@@ -21,6 +21,10 @@ static const sh_device_profile_t *get_configured_profile(void)
     return sh_profile_light_get();
 #elif defined(CONFIG_SH_NODE_PROFILE_SWITCH) && CONFIG_SH_NODE_PROFILE_SWITCH
     return sh_profile_switch_get();
+#elif defined(CONFIG_SH_NODE_PROFILE_TV) && CONFIG_SH_NODE_PROFILE_TV
+    return sh_profile_tv_get();
+#elif defined(CONFIG_SH_NODE_PROFILE_CURTAIN) && CONFIG_SH_NODE_PROFILE_CURTAIN
+    return sh_profile_curtain_get();
 #else
     return sh_profile_ac_get();
 #endif
@@ -90,6 +94,15 @@ static void reset_requested_cb(void *user_data)
     schedule_restart();
 }
 
+static void profile_changed_cb(const sh_device_profile_t *profile, void *user_data)
+{
+    (void)user_data;
+    ESP_LOGI(TAG, "Node profile changed to 0x%04x (%s)",
+             profile ? profile->profile_id : 0,
+             profile && profile->display_name ? profile->display_name : "unknown");
+    ui_update_node_status();
+}
+
 esp_err_t ac_server_init(void)
 {
     const sh_device_profile_t *profile = get_configured_profile();
@@ -100,6 +113,7 @@ esp_err_t ac_server_init(void)
         .feature_changed_cb = feature_changed_cb,
         .connection_cb = connection_cb,
         .reset_requested_cb = reset_requested_cb,
+        .profile_changed_cb = profile_changed_cb,
     };
 
     esp_err_t err = sh_node_init(profile, &callbacks);

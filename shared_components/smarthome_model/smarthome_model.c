@@ -1,4 +1,5 @@
 #include "smarthome_model.h"
+#include <ctype.h>
 #include <string.h>
 
 #ifndef ESP_RETURN_ON_ERROR
@@ -13,7 +14,7 @@
 #define SH_PROFILE_MAGIC0 'S'
 #define SH_PROFILE_MAGIC1 'H'
 #define SH_PROFILE_MAGIC2 'P'
-#define SH_PROFILE_MAGIC3 '1'
+#define SH_PROFILE_MAGIC3 '2'
 
 static const sh_device_profile_t *s_profiles[SH_MODEL_MAX_PROFILES];
 static uint8_t s_profile_count;
@@ -141,6 +142,145 @@ const sh_feature_def_t *sh_model_find_feature(const sh_device_profile_t *profile
     return NULL;
 }
 
+static bool contains_ignore_case(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') {
+        return false;
+    }
+
+    for (const char *h = haystack; *h; h++) {
+        const char *hp = h;
+        const char *np = needle;
+        while (*hp && *np &&
+               tolower((unsigned char)*hp) == tolower((unsigned char)*np)) {
+            hp++;
+            np++;
+        }
+        if (*np == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+sh_feature_role_t sh_model_infer_feature_role(const sh_feature_def_t *feature)
+{
+    if (!feature) {
+        return SH_FEATURE_ROLE_AUTO;
+    }
+    if (feature->role != SH_FEATURE_ROLE_AUTO) {
+        return feature->role;
+    }
+
+    switch (feature->feature_id) {
+    case SH_FEATURE_ID_POWER:
+        return SH_FEATURE_ROLE_SWITCH;
+    case SH_FEATURE_ID_TEMPERATURE:
+        return SH_FEATURE_ROLE_TEMPERATURE;
+    case SH_FEATURE_ID_MODE:
+        return SH_FEATURE_ROLE_MODE;
+    case SH_FEATURE_ID_FAN_SPEED:
+        return SH_FEATURE_ROLE_FAN_SPEED;
+    case SH_FEATURE_ID_BRIGHTNESS:
+        return SH_FEATURE_ROLE_BRIGHTNESS;
+    case SH_FEATURE_ID_VOLUME:
+        return SH_FEATURE_ROLE_VOLUME;
+    case SH_FEATURE_ID_CHANNEL:
+        return SH_FEATURE_ROLE_CHANNEL;
+    case SH_FEATURE_ID_MUTE:
+        return SH_FEATURE_ROLE_MUTE;
+    case SH_FEATURE_ID_INPUT_SOURCE:
+        return SH_FEATURE_ROLE_INPUT_SOURCE;
+    case SH_FEATURE_ID_POSITION:
+    case SH_FEATURE_ID_OPEN_CLOSE:
+        return SH_FEATURE_ROLE_POSITION;
+    case SH_FEATURE_ID_ANALOG_VALUE:
+        return SH_FEATURE_ROLE_ANALOG;
+    default:
+        break;
+    }
+
+    if (contains_ignore_case(feature->name, "bright")) {
+        return SH_FEATURE_ROLE_BRIGHTNESS;
+    }
+    if (contains_ignore_case(feature->name, "position") ||
+        contains_ignore_case(feature->name, "open")) {
+        return SH_FEATURE_ROLE_POSITION;
+    }
+    if (contains_ignore_case(feature->name, "volume")) {
+        return SH_FEATURE_ROLE_VOLUME;
+    }
+    if (contains_ignore_case(feature->name, "channel")) {
+        return SH_FEATURE_ROLE_CHANNEL;
+    }
+    if (contains_ignore_case(feature->name, "mute")) {
+        return SH_FEATURE_ROLE_MUTE;
+    }
+    if (contains_ignore_case(feature->name, "input")) {
+        return SH_FEATURE_ROLE_INPUT_SOURCE;
+    }
+    if (contains_ignore_case(feature->name, "temp")) {
+        return SH_FEATURE_ROLE_TEMPERATURE;
+    }
+
+    if (feature->type == SH_FEATURE_TYPE_BOOL) {
+        return SH_FEATURE_ROLE_SWITCH;
+    }
+    if (feature->type == SH_FEATURE_TYPE_INT) {
+        return SH_FEATURE_ROLE_ANALOG;
+    }
+    if (feature->type == SH_FEATURE_TYPE_ENUM) {
+        return SH_FEATURE_ROLE_MODE;
+    }
+    return SH_FEATURE_ROLE_AUTO;
+}
+
+const char *sh_model_feature_role_name(sh_feature_role_t role)
+{
+    switch (role) {
+    case SH_FEATURE_ROLE_SWITCH:
+        return "Switch";
+    case SH_FEATURE_ROLE_TEMPERATURE:
+        return "Temperature";
+    case SH_FEATURE_ROLE_MODE:
+        return "Mode";
+    case SH_FEATURE_ROLE_FAN_SPEED:
+        return "Fan";
+    case SH_FEATURE_ROLE_BRIGHTNESS:
+        return "Brightness";
+    case SH_FEATURE_ROLE_POSITION:
+        return "Position";
+    case SH_FEATURE_ROLE_VOLUME:
+        return "Volume";
+    case SH_FEATURE_ROLE_CHANNEL:
+        return "Channel";
+    case SH_FEATURE_ROLE_MUTE:
+        return "Mute";
+    case SH_FEATURE_ROLE_INPUT_SOURCE:
+        return "Input";
+    case SH_FEATURE_ROLE_ANALOG:
+        return "Analog";
+    case SH_FEATURE_ROLE_AUTO:
+    default:
+        return "Feature";
+    }
+}
+
+const char *sh_model_feature_unit(const sh_feature_def_t *feature)
+{
+    sh_feature_role_t role = sh_model_infer_feature_role(feature);
+    switch (role) {
+    case SH_FEATURE_ROLE_TEMPERATURE:
+        return "C";
+    case SH_FEATURE_ROLE_BRIGHTNESS:
+    case SH_FEATURE_ROLE_POSITION:
+    case SH_FEATURE_ROLE_VOLUME:
+        return "%";
+    default:
+        return "";
+    }
+}
+
 esp_err_t sh_model_validate_value(const sh_feature_def_t *feature, int32_t value)
 {
     if (!feature) {
@@ -242,10 +382,11 @@ esp_err_t sh_model_serialize_profile(const sh_device_profile_t *profile,
     for (uint8_t i = 0; i < profile->feature_count; i++) {
         const sh_feature_def_t *feature = &profile->features[i];
         ESP_RETURN_ON_ERROR(write_u16(buf, buf_len, &off, feature->feature_id), "sh_model", "feature_id");
-        if (off + 3 > buf_len) {
+        if (off + 4 > buf_len) {
             return ESP_ERR_NO_MEM;
         }
         buf[off++] = (uint8_t)feature->type;
+        buf[off++] = (uint8_t)sh_model_infer_feature_role(feature);
         buf[off++] = feature->flags;
         buf[off++] = feature->constraints.enum_count;
         ESP_RETURN_ON_ERROR(write_i32(buf, buf_len, &off, feature->constraints.min), "sh_model", "min");
@@ -294,12 +435,13 @@ esp_err_t sh_model_deserialize_profile(const uint8_t *buf,
     storage->profile.features = storage->features;
 
     for (uint8_t i = 0; i < feature_count; i++) {
-        if (off + 20 > len) {
+        if (off + 22 > len) {
             return ESP_ERR_INVALID_SIZE;
         }
         sh_feature_def_t *feature = &storage->features[i];
         feature->feature_id = read_u16(buf, &off);
         feature->type = (sh_feature_type_t)buf[off++];
+        feature->role = (sh_feature_role_t)buf[off++];
         feature->flags = buf[off++];
         feature->constraints.enum_count = buf[off++];
         feature->constraints.min = read_i32(buf, &off);

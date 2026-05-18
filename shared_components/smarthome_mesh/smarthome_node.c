@@ -35,11 +35,18 @@ static const sh_device_profile_t *s_profile;
 static sh_feature_state_t s_states[SH_MODEL_MAX_FEATURES];
 static size_t s_state_count;
 static sh_node_callbacks_t s_callbacks;
+static sh_dynamic_profile_t s_dynamic_profile_storage;
 static uint16_t s_device_addr;
 static uint16_t s_client_addr;
 static bool s_connected;
 static uint8_t s_profile_blob[SH_PROFILE_BLOB_MAX];
 static size_t s_profile_blob_len;
+static uint8_t s_profile_set_blob[SH_PROFILE_BLOB_MAX];
+static uint16_t s_profile_set_blob_len;
+static uint16_t s_profile_set_expected_len;
+static uint16_t s_profile_set_crc;
+static uint8_t s_profile_set_chunks_seen;
+static uint8_t s_profile_set_chunk_count;
 
 static esp_ble_mesh_cfg_srv_t s_config_server = {
     .net_transmit = ESP_BLE_MESH_TRANSMIT(3, 20),
@@ -65,6 +72,7 @@ static esp_ble_mesh_model_t s_root_models[] = {
 
 static esp_ble_mesh_model_op_t s_node_ops[] = {
     ESP_BLE_MESH_MODEL_OP(SH_OP_PROFILE_GET, 0),
+    ESP_BLE_MESH_MODEL_OP(SH_OP_PROFILE_SET, 0),
     ESP_BLE_MESH_MODEL_OP(SH_OP_FEATURE_GET, 0),
     ESP_BLE_MESH_MODEL_OP(SH_OP_FEATURE_SET, 0),
     ESP_BLE_MESH_MODEL_OP(SH_OP_DISCONNECT_NOTIFY, 0),
@@ -95,6 +103,13 @@ static void notify_feature_changed(const sh_feature_state_t *state)
     if (s_callbacks.feature_changed_cb && state) {
         s_callbacks.feature_changed_cb(state->feature_id, state->type, state->value,
                                        s_callbacks.user_data);
+    }
+}
+
+static void notify_profile_changed(void)
+{
+    if (s_callbacks.profile_changed_cb && s_profile) {
+        s_callbacks.profile_changed_cb(s_profile, s_callbacks.user_data);
     }
 }
 
@@ -136,6 +151,12 @@ static esp_err_t send_profile_status(esp_ble_mesh_msg_ctx_t *ctx, uint8_t tid)
 
     uint16_t crc = sh_protocol_crc16(s_profile_blob, s_profile_blob_len);
     uint8_t chunk_count = (s_profile_blob_len + SH_PROFILE_CHUNK_PAYLOAD - 1) / SH_PROFILE_CHUNK_PAYLOAD;
+    ESP_LOGI(TAG, "Sending profile 0x%04x (%s), len=%u, chunks=%u to 0x%04x",
+             s_profile->profile_id,
+             s_profile->display_name ? s_profile->display_name : "Profile",
+             (unsigned)s_profile_blob_len,
+             chunk_count,
+             ctx->addr);
 
     for (uint8_t i = 0; i < chunk_count; i++) {
         uint16_t offset = i * SH_PROFILE_CHUNK_PAYLOAD;
@@ -161,6 +182,8 @@ static esp_err_t send_profile_status(esp_ble_mesh_msg_ctx_t *ctx, uint8_t tid)
                                                            SH_OP_PROFILE_STATUS,
                                                            sizeof(header) + chunk_len, payload);
         if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to send profile chunk %u/%u: %s",
+                     i + 1, chunk_count, esp_err_to_name(err));
             return err;
         }
     }
@@ -234,6 +257,75 @@ static void handle_feature_set(esp_ble_mesh_msg_ctx_t *ctx, const uint8_t *msg, 
     }
 }
 
+static void handle_profile_set(esp_ble_mesh_msg_ctx_t *ctx, const uint8_t *data, uint16_t len)
+{
+    if (!ctx || !data || len < sizeof(sh_profile_chunk_header_t)) {
+        return;
+    }
+
+    sh_profile_chunk_header_t header;
+    memcpy(&header, data, sizeof(header));
+    if (header.version != SH_PROTOCOL_VERSION ||
+        header.chunk_len > SH_PROFILE_CHUNK_PAYLOAD ||
+        sizeof(header) + header.chunk_len > len ||
+        header.total_len > SH_PROFILE_BLOB_MAX ||
+        header.chunk_index >= header.chunk_count) {
+        ESP_LOGW(TAG, "Invalid profile set chunk");
+        return;
+    }
+
+    if (header.chunk_index == 0) {
+        s_profile_set_blob_len = 0;
+        s_profile_set_chunks_seen = 0;
+        s_profile_set_chunk_count = header.chunk_count;
+        s_profile_set_expected_len = header.total_len;
+        s_profile_set_crc = header.crc16;
+        memset(s_profile_set_blob, 0, sizeof(s_profile_set_blob));
+    }
+
+    uint16_t offset = header.chunk_index * SH_PROFILE_CHUNK_PAYLOAD;
+    if (offset + header.chunk_len > sizeof(s_profile_set_blob)) {
+        return;
+    }
+    memcpy(&s_profile_set_blob[offset], data + sizeof(header), header.chunk_len);
+    if (offset + header.chunk_len > s_profile_set_blob_len) {
+        s_profile_set_blob_len = offset + header.chunk_len;
+    }
+    s_profile_set_chunks_seen++;
+
+    if (s_profile_set_chunks_seen < s_profile_set_chunk_count) {
+        return;
+    }
+    if (s_profile_set_blob_len != s_profile_set_expected_len ||
+        sh_protocol_crc16(s_profile_set_blob, s_profile_set_blob_len) != s_profile_set_crc) {
+        ESP_LOGW(TAG, "Profile set CRC/length mismatch");
+        return;
+    }
+
+    const sh_device_profile_t *profile = NULL;
+    esp_err_t err = sh_model_deserialize_profile(s_profile_set_blob, s_profile_set_blob_len,
+                                                 &s_dynamic_profile_storage, &profile);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to parse profile set: %s", esp_err_to_name(err));
+        return;
+    }
+
+    s_profile = profile;
+    memcpy(s_profile_blob, s_profile_set_blob, s_profile_set_blob_len);
+    s_profile_blob_len = s_profile_set_blob_len;
+    if (sh_model_default_states(s_profile, s_states,
+                                SH_MODEL_MAX_FEATURES, &s_state_count) == ESP_OK) {
+        sh_node_load_state();
+    }
+    sh_store_save_profile_blob(s_profile->profile_id, s_profile_blob, s_profile_blob_len);
+    sh_store_save_active_profile(s_profile->profile_id);
+    notify_profile_changed();
+
+    ESP_LOGI(TAG, "Applied profile set 0x%04x (%s)",
+             s_profile->profile_id, s_profile->display_name);
+    send_profile_status(ctx, header.tid);
+}
+
 static void model_cb(esp_ble_mesh_model_cb_event_t event,
                      esp_ble_mesh_model_cb_param_t *param)
 {
@@ -250,10 +342,14 @@ static void model_cb(esp_ble_mesh_model_cb_event_t event,
             if (sh_protocol_read_header(param->model_operation.msg,
                                         param->model_operation.length,
                                         &header, &offset) == ESP_OK) {
+                ESP_LOGI(TAG, "Profile get from 0x%04x", ctx->addr);
                 send_profile_status(ctx, header.tid);
             }
             break;
         }
+        case SH_OP_PROFILE_SET:
+            handle_profile_set(ctx, param->model_operation.msg, param->model_operation.length);
+            break;
         case SH_OP_FEATURE_GET:
             handle_feature_get(ctx, param->model_operation.msg, param->model_operation.length);
             break;
@@ -348,21 +444,50 @@ esp_err_t sh_node_init(const sh_device_profile_t *profile, const sh_node_callbac
     ESP_RETURN_ON_ERROR(sh_store_init(SH_STORE_NAMESPACE_DEFAULT), TAG, "store init");
 
     s_profile = profile;
+    s_profile_blob_len = 0;
+    uint16_t active_profile_id = 0;
+    if (sh_store_load_active_profile(&active_profile_id) == ESP_OK) {
+        size_t loaded_len = 0;
+        const sh_device_profile_t *loaded_profile = NULL;
+        esp_err_t load_err = sh_store_load_profile_blob(active_profile_id,
+                                                        s_profile_blob,
+                                                        sizeof(s_profile_blob),
+                                                        &loaded_len);
+        if (load_err == ESP_OK &&
+            sh_model_deserialize_profile(s_profile_blob, loaded_len,
+                                         &s_dynamic_profile_storage,
+                                         &loaded_profile) == ESP_OK) {
+            s_profile = loaded_profile;
+            s_profile_blob_len = loaded_len;
+            ESP_LOGI(TAG, "Restored active profile 0x%04x (%s)",
+                     s_profile->profile_id, s_profile->display_name);
+        } else {
+            const sh_device_profile_t *builtin = sh_profiles_get_builtin(active_profile_id);
+            if (builtin) {
+                s_profile = builtin;
+                ESP_LOGI(TAG, "Restored active built-in profile 0x%04x (%s)",
+                         s_profile->profile_id, s_profile->display_name);
+            }
+        }
+    }
+
     if (callbacks) {
         s_callbacks = *callbacks;
     } else {
         memset(&s_callbacks, 0, sizeof(s_callbacks));
     }
 
-    ESP_RETURN_ON_ERROR(sh_model_default_states(profile, s_states,
+    ESP_RETURN_ON_ERROR(sh_model_default_states(s_profile, s_states,
                                                 SH_MODEL_MAX_FEATURES, &s_state_count),
                         TAG, "default states");
     sh_node_load_state();
 
-    ESP_RETURN_ON_ERROR(sh_model_serialize_profile(profile, s_profile_blob,
-                                                   sizeof(s_profile_blob),
-                                                   &s_profile_blob_len),
-                        TAG, "serialize profile");
+    if (s_profile_blob_len == 0) {
+        ESP_RETURN_ON_ERROR(sh_model_serialize_profile(s_profile, s_profile_blob,
+                                                       sizeof(s_profile_blob),
+                                                       &s_profile_blob_len),
+                            TAG, "serialize profile");
+    }
 
     ble_mesh_get_dev_uuid(s_dev_uuid);
     esp_ble_mesh_register_prov_callback(provisioning_cb);
@@ -381,7 +506,7 @@ esp_err_t sh_node_init(const sh_device_profile_t *profile, const sh_node_callbac
     }
 
     ESP_LOGI(TAG, "Generic smart-home node initialized with profile 0x%04x (%s)",
-             profile->profile_id, profile->display_name);
+             s_profile->profile_id, s_profile->display_name);
     return ESP_OK;
 }
 

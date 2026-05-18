@@ -1,8 +1,7 @@
-idf_component_register(SRCS "device_controller.c"
+idf_component_register(SRCS "device_controller_ui_integration.c" "device_controller.c"
                             "device_controller_state_machine.c"
                             "device_controller_buttons.c"
                             "device_controller_display.c"
-                            "device_controller_ui_integration.c"
                        INCLUDE_DIRS "."
                        REQUIRES esp_timer
                                 ui
@@ -10,4 +9,5 @@ idf_component_register(SRCS "device_controller.c"
                                 smarthome_mesh
                                 smarthome_model
                                 smarthome_profiles
+                                smarthome_ui
                        PRIV_REQUIRES main)

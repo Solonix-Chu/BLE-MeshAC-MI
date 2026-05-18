@@ -56,6 +56,7 @@ typedef enum {
     DC_PARAM_MODE,              /**< Operating mode */
     DC_PARAM_LEGACY_COUNT,      /**< Number of legacy AC fallback parameters */
     DC_PARAM_MAX = SH_MODEL_MAX_FEATURES,
+    DC_PARAM_DEVICE_TYPE = 0xFD,/**< Built-in profile selector sentinel */
     DC_PARAM_ACTION = 0xFE      /**< Internal command sentinel, not a feature index */
 } dc_parameter_t;
 

@@ -67,6 +67,7 @@ static uint8_t s_device_count;
 static sh_client_callbacks_t s_callbacks;
 static bool s_initialized;
 static bool s_key_refresh_in_progress;
+static uint8_t s_profile_set_blob[SH_PROFILE_BLOB_MAX];
 
 static esp_ble_mesh_cfg_srv_t s_config_server = {
     .net_transmit = ESP_BLE_MESH_TRANSMIT(2, 20),
@@ -94,6 +95,7 @@ static esp_ble_mesh_model_op_t s_client_ops[] = {
 
 static esp_ble_mesh_client_op_pair_t s_client_op_pair[] = {
     {SH_OP_PROFILE_GET, SH_OP_PROFILE_STATUS},
+    {SH_OP_PROFILE_SET, SH_OP_PROFILE_STATUS},
     {SH_OP_FEATURE_GET, SH_OP_FEATURE_STATUS},
     {SH_OP_FEATURE_SET, SH_OP_FEATURE_STATUS},
     {SH_OP_DISCONNECT_NOTIFY, SH_OP_DISCONNECT_ACK},
@@ -223,7 +225,14 @@ static esp_err_t request_profile_for_device(uint16_t addr)
     ESP_RETURN_ON_ERROR(sh_protocol_write_header(payload, sizeof(payload),
                                                  sh_protocol_next_tid(), &written),
                         TAG, "write profile get header");
-    return send_vendor(addr, SH_OP_PROFILE_GET, payload, written, true);
+    esp_err_t err = send_vendor(addr, SH_OP_PROFILE_GET, payload, written, true);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Requested profile from 0x%04x", addr);
+    } else {
+        ESP_LOGW(TAG, "Failed to request profile from 0x%04x: %s",
+                 addr, esp_err_to_name(err));
+    }
+    return err;
 }
 
 static void mark_device_configured(uint16_t addr)
@@ -238,15 +247,14 @@ static void mark_device_configured(uint16_t addr)
     slot->public_info.last_update_time = now_ms();
     slot->consecutive_timeouts = 0;
 
+    request_profile_for_device(addr);
+
     if (s_callbacks.online_cb) {
         s_callbacks.online_cb(addr, true);
     }
     if (s_callbacks.provisioned_cb) {
         s_callbacks.provisioned_cb(addr);
     }
-
-    sh_client_add_device_to_group(addr);
-    request_profile_for_device(addr);
 }
 
 static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t len)
@@ -255,6 +263,9 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
     if (!slot || !data || len < sizeof(sh_profile_chunk_header_t)) {
         return;
     }
+    slot->consecutive_timeouts = 0;
+    slot->public_info.is_online = true;
+    slot->public_info.last_update_time = now_ms();
 
     sh_profile_chunk_header_t header;
     memcpy(&header, data, sizeof(header));
@@ -311,6 +322,7 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
                             SH_MODEL_MAX_FEATURES, &slot->public_info.state_count);
     strncpy(slot->public_info.device_name, profile->display_name,
             sizeof(slot->public_info.device_name) - 1);
+    slot->public_info.device_name[sizeof(slot->public_info.device_name) - 1] = '\0';
 
     ESP_LOGI(TAG, "Loaded profile 0x%04x (%s) from 0x%04x",
              profile->profile_id, profile->display_name, addr);
@@ -319,6 +331,7 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
         s_callbacks.profile_cb(addr, profile);
     }
     sh_client_refresh_device(addr);
+    sh_client_add_device_to_group(addr);
 }
 
 static void handle_feature_status(uint16_t addr, const uint8_t *data, uint16_t len)
@@ -419,6 +432,11 @@ static void vendor_model_cb(esp_ble_mesh_model_cb_event_t event,
         sh_client_device_slot_t *slot = find_device(addr);
         if (slot) {
             slot->consecutive_timeouts++;
+            if (param->client_send_timeout.opcode == SH_OP_PROFILE_GET &&
+                !slot->public_info.profile_loaded &&
+                slot->consecutive_timeouts < SH_MAX_TIMEOUTS) {
+                request_profile_for_device(addr);
+            }
             if (slot->consecutive_timeouts >= SH_MAX_TIMEOUTS) {
                 slot->public_info.is_online = false;
                 if (s_callbacks.online_cb) {
@@ -697,6 +715,71 @@ esp_err_t sh_client_get_profile(uint16_t addr)
     return request_profile_for_device(addr);
 }
 
+esp_err_t sh_client_set_profile(uint16_t addr, const sh_device_profile_t *profile)
+{
+    if (!profile) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    sh_client_device_slot_t *slot = find_device(addr);
+    if (!slot) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    size_t blob_len = 0;
+    ESP_RETURN_ON_ERROR(sh_model_serialize_profile(profile, s_profile_set_blob,
+                                                   sizeof(s_profile_set_blob), &blob_len),
+                        TAG, "serialize profile set");
+
+    uint16_t crc = sh_protocol_crc16(s_profile_set_blob, blob_len);
+    uint8_t tid = sh_protocol_next_tid();
+    uint8_t chunk_count = (blob_len + SH_PROFILE_CHUNK_PAYLOAD - 1) / SH_PROFILE_CHUNK_PAYLOAD;
+
+    for (uint8_t i = 0; i < chunk_count; i++) {
+        uint16_t offset = i * SH_PROFILE_CHUNK_PAYLOAD;
+        uint8_t chunk_len = (blob_len - offset) > SH_PROFILE_CHUNK_PAYLOAD ?
+            SH_PROFILE_CHUNK_PAYLOAD : (uint8_t)(blob_len - offset);
+
+        uint8_t payload[sizeof(sh_profile_chunk_header_t) + SH_PROFILE_CHUNK_PAYLOAD];
+        sh_profile_chunk_header_t header = {
+            .version = SH_PROTOCOL_VERSION,
+            .tid = tid,
+            .profile_id = profile->profile_id,
+            .profile_version = profile->version,
+            .total_len = (uint16_t)blob_len,
+            .crc16 = crc,
+            .chunk_index = i,
+            .chunk_count = chunk_count,
+            .chunk_len = chunk_len,
+        };
+        memcpy(payload, &header, sizeof(header));
+        memcpy(payload + sizeof(header), &s_profile_set_blob[offset], chunk_len);
+
+        esp_err_t err = send_vendor(addr, SH_OP_PROFILE_SET, payload,
+                                    sizeof(header) + chunk_len,
+                                    i + 1 == chunk_count);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    slot->public_info.profile = profile;
+    slot->public_info.profile_loaded = true;
+    sh_model_default_states(profile, slot->public_info.states,
+                            SH_MODEL_MAX_FEATURES, &slot->public_info.state_count);
+    strncpy(slot->public_info.device_name, profile->display_name,
+            sizeof(slot->public_info.device_name) - 1);
+    slot->public_info.device_name[sizeof(slot->public_info.device_name) - 1] = '\0';
+    sh_store_save_profile_blob(profile->profile_id, s_profile_set_blob, blob_len);
+
+    if (s_callbacks.profile_cb) {
+        s_callbacks.profile_cb(addr, profile);
+    }
+    ESP_LOGI(TAG, "Sent profile 0x%04x (%s) to 0x%04x",
+             profile->profile_id, profile->display_name, addr);
+    return ESP_OK;
+}
+
 esp_err_t sh_client_get_feature(uint16_t addr, uint16_t feature_id)
 {
     uint8_t payload[4];
@@ -972,6 +1055,7 @@ uint16_t sh_client_get_device_addr_by_index(uint8_t index) { (void)index; return
 bool sh_client_is_device_online(uint16_t addr) { (void)addr; return false; }
 bool sh_client_is_device_set_cmd_responsive(uint16_t addr) { (void)addr; return false; }
 esp_err_t sh_client_get_profile(uint16_t addr) { (void)addr; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t sh_client_set_profile(uint16_t addr, const sh_device_profile_t *profile) { (void)addr; (void)profile; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t sh_client_get_feature(uint16_t addr, uint16_t feature_id) { (void)addr; (void)feature_id; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t sh_client_set_feature(uint16_t addr, uint16_t feature_id, int32_t value) { (void)addr; (void)feature_id; (void)value; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t sh_client_group_set_feature(uint16_t feature_id, int32_t value) { (void)feature_id; (void)value; return ESP_ERR_NOT_SUPPORTED; }

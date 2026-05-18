@@ -16,11 +16,13 @@ typedef void (*sh_node_feature_changed_cb_t)(uint16_t feature_id,
                                              void *user_data);
 typedef void (*sh_node_connection_cb_t)(bool is_connected, uint16_t client_addr, void *user_data);
 typedef void (*sh_node_reset_requested_cb_t)(void *user_data);
+typedef void (*sh_node_profile_changed_cb_t)(const sh_device_profile_t *profile, void *user_data);
 
 typedef struct {
     sh_node_feature_changed_cb_t feature_changed_cb;
     sh_node_connection_cb_t connection_cb;
     sh_node_reset_requested_cb_t reset_requested_cb;
+    sh_node_profile_changed_cb_t profile_changed_cb;
     void *user_data;
 } sh_node_callbacks_t;
 

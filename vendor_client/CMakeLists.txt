@@ -7,6 +7,7 @@ set(EXTRA_COMPONENT_DIRS
     "../shared_components/smarthome_model"
     "../shared_components/smarthome_store"
     "../shared_components/smarthome_profiles"
+    "../shared_components/smarthome_ui"
     "../shared_components/smarthome_mesh")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

@@ -4,6 +4,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "smarthome_profiles.h"
 #include "string.h"
 
 static const char *TAG = "DC_STATE_MACHINE";
@@ -55,7 +56,9 @@ static void start_timeout_timer(void);
 static void stop_timeout_timer(void);
 static void change_state(dc_state_t new_state);
 static void update_display(void);
+static bool is_group_target(uint8_t device_idx);
 static uint8_t get_device_parameter_count(uint8_t device_idx);
+static uint8_t get_device_feature_count(uint8_t device_idx);
 static const sh_feature_def_t *get_device_feature_def(uint8_t device_idx, dc_parameter_t param);
 static int32_t get_parameter_value(uint8_t device_idx, dc_parameter_t param);
 static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_t value);
@@ -122,7 +125,20 @@ static void update_display(void)
     }
 }
 
+static bool is_group_target(uint8_t device_idx)
+{
+    return device_idx < s_device_count &&
+        s_devices[device_idx].device_name &&
+        strcmp(s_devices[device_idx].device_name, "All Device") == 0;
+}
+
 static uint8_t get_device_parameter_count(uint8_t device_idx)
+{
+    uint8_t count = get_device_feature_count(device_idx);
+    return is_group_target(device_idx) ? count : count + 1;
+}
+
+static uint8_t get_device_feature_count(uint8_t device_idx)
 {
     if (device_idx < s_device_count &&
         s_devices[device_idx].profile &&
@@ -147,6 +163,14 @@ static const sh_feature_def_t *get_device_feature_def(uint8_t device_idx, dc_par
 static int32_t get_parameter_value(uint8_t device_idx, dc_parameter_t param)
 {
     if (device_idx >= s_device_count) {
+        return 0;
+    }
+
+    if (param == DC_PARAM_DEVICE_TYPE) {
+        if (s_devices[device_idx].profile) {
+            int index = sh_profiles_find_builtin_index(s_devices[device_idx].profile->profile_id);
+            return index >= 0 ? index : 0;
+        }
         return 0;
     }
 
@@ -181,6 +205,47 @@ static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_
     }
 
     ESP_LOGI(TAG, "Setting parameter %d to value %ld for device %d", param, value, device_idx);
+
+    if (param == DC_PARAM_DEVICE_TYPE) {
+        if (is_group_target(device_idx)) {
+            ESP_LOGW(TAG, "Group target does not support profile selection");
+            return;
+        }
+        const sh_device_profile_t *profile = sh_profiles_get_builtin_by_index((uint8_t)value);
+        if (!profile) {
+            ESP_LOGW(TAG, "Invalid built-in profile index: %ld", value);
+            return;
+        }
+
+        s_devices[device_idx].profile = profile;
+        s_devices[device_idx].device_name = profile->display_name;
+        size_t state_count = 0;
+        if (sh_model_default_states(profile, s_devices[device_idx].feature_states,
+                                    SH_MODEL_MAX_FEATURES, &state_count) == ESP_OK) {
+            s_devices[device_idx].feature_state_count = (uint8_t)state_count;
+        }
+        for (uint8_t i = 0; i < s_devices[device_idx].feature_state_count; i++) {
+            const sh_feature_state_t *state = &s_devices[device_idx].feature_states[i];
+            switch (state->feature_id) {
+            case SH_FEATURE_ID_POWER:
+                s_devices[device_idx].status.power = state->value != 0;
+                break;
+            case SH_FEATURE_ID_TEMPERATURE:
+                s_devices[device_idx].status.temperature = state->value;
+                break;
+            case SH_FEATURE_ID_MODE:
+                s_devices[device_idx].status.mode = (uint8_t)state->value;
+                break;
+            case SH_FEATURE_ID_FAN_SPEED:
+                s_devices[device_idx].status.fan_speed = (uint8_t)state->value;
+                break;
+            default:
+                break;
+            }
+        }
+        ESP_LOGI(TAG, "Local profile changed to %s", profile->display_name);
+        return;
+    }
 
     const sh_feature_def_t *feature = get_device_feature_def(device_idx, param);
     if (feature) {
@@ -242,6 +307,20 @@ static void set_parameter_value(uint8_t device_idx, dc_parameter_t param, int32_
 
 static void adjust_value(dc_parameter_t param, int32_t *value, bool increment)
 {
+    if (param == DC_PARAM_DEVICE_TYPE) {
+        uint8_t count = sh_profiles_get_builtin_count();
+        if (count == 0) {
+            return;
+        }
+        if (increment) {
+            *value = (*value + 1) % count;
+        } else {
+            *value = (*value - 1 + count) % count;
+        }
+        ESP_LOGI(TAG, "Profile selection adjusted to %ld", *value);
+        return;
+    }
+
     const sh_feature_def_t *feature = get_device_feature_def(s_context.current_device_idx, param);
     if (feature) {
         int32_t old_value = *value;
@@ -479,7 +558,11 @@ esp_err_t dc_state_machine_process_event(dc_event_t event)
 
                 case DC_EVENT_CENTER_SINGLE_CLICK:
                     // Enter value adjustment
-                    s_context.selected_parameter = (dc_parameter_t)s_context.current_selection;
+                    if (s_context.current_selection >= get_device_feature_count(s_context.current_device_idx)) {
+                        s_context.selected_parameter = DC_PARAM_DEVICE_TYPE;
+                    } else {
+                        s_context.selected_parameter = (dc_parameter_t)s_context.current_selection;
+                    }
                     s_context.editing_value = get_parameter_value(s_context.current_device_idx, s_context.selected_parameter);
                     ESP_LOGI(TAG, "Entering value adjustment for parameter %d, current value: %ld",
                              s_context.selected_parameter, s_context.editing_value);

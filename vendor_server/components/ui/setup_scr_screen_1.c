@@ -243,6 +243,24 @@ void setup_scr_screen_1(lv_ui *ui)
     lv_obj_set_style_clip_corner(ui->screen_1_speed1, true, LV_PART_MAIN|LV_STATE_DEFAULT);
 
     //The custom code of screen_1.
+    lv_obj_t *legacy_controls[] = {
+        ui->screen_1_canvas_1,
+        ui->screen_1_TempNum,
+        ui->screen_1_DeviceIndex,
+        ui->screen_1_TempUnit,
+        ui->screen_1_OnOff,
+        ui->screen_1_Mode,
+        ui->screen_1_HeartEmpty,
+        ui->screen_1_HeartReal,
+        ui->screen_1_speed1,
+        ui->screen_1_speed2,
+        ui->screen_1_speed3,
+    };
+    for (unsigned int i = 0; i < sizeof(legacy_controls) / sizeof(legacy_controls[0]); i++) {
+        if (legacy_controls[i]) {
+            lv_obj_add_flag(legacy_controls[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
 
     //Update current screen layout.
