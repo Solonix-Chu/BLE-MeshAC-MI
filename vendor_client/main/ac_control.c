@@ -2,7 +2,9 @@
 
 #include "ac_control.h"
 #include <string.h>
+#include "sdkconfig.h"
 #include "esp_log.h"
+#include "smarthome_ble_bridge.h"
 
 static const char *TAG = "AC_FACADE";
 
@@ -10,8 +12,8 @@ static ac_device_status_callback_t s_status_cb;
 static ac_device_online_callback_t s_online_cb;
 static ac_device_provisioned_callback_t s_provisioned_cb;
 static bool s_initialized;
-static sh_client_device_t s_sh_device_list[MAX_AC_SERVERS];
-static sh_client_device_t s_sh_device_tmp;
+static sh_controller_device_t s_sh_device_list[MAX_AC_SERVERS];
+static sh_controller_device_t s_sh_device_tmp;
 
 uint16_t ac_status_to_feature_id(ac_status_type_t status_type)
 {
@@ -52,7 +54,7 @@ bool ac_feature_to_status(uint16_t feature_id, ac_status_type_t *status_type)
     }
 }
 
-static int32_t get_feature_value(const sh_client_device_t *device, uint16_t feature_id, int32_t fallback)
+static int32_t get_feature_value(const sh_controller_device_t *device, uint16_t feature_id, int32_t fallback)
 {
     const sh_feature_state_t *state = sh_model_find_const_state(device->states,
                                                                 device->state_count,
@@ -60,7 +62,7 @@ static int32_t get_feature_value(const sh_client_device_t *device, uint16_t feat
     return state ? state->value : fallback;
 }
 
-static void map_device_info(const sh_client_device_t *src, ac_device_info_t *dst)
+static void map_device_info(const sh_controller_device_t *src, ac_device_info_t *dst)
 {
     memset(dst, 0, sizeof(*dst));
     dst->addr = src->addr;
@@ -87,6 +89,8 @@ static void sh_feature_status_cb(uint16_t device_addr,
                                  sh_feature_type_t type,
                                  int32_t value)
 {
+    sh_ble_bridge_notify_device_status(device_addr, feature_id, type, value);
+
     (void)type;
     ac_status_type_t status_type;
     if (s_status_cb && ac_feature_to_status(feature_id, &status_type)) {
@@ -124,7 +128,14 @@ esp_err_t ac_client_init(void)
         return ESP_OK;
     }
 
-    esp_err_t err = sh_client_init();
+    sh_controller_role_t role = SH_CONTROLLER_ROLE_PROVISIONER_CONTROLLER;
+#if CONFIG_SH_ROLE_REMOTE_CONTROLLER
+    role = SH_CONTROLLER_ROLE_REMOTE_CONTROLLER;
+#elif CONFIG_SH_ROLE_GATEWAY_RELAY
+    role = SH_CONTROLLER_ROLE_GATEWAY_RELAY;
+#endif
+
+    esp_err_t err = sh_controller_init(role, NULL);
     if (err == ESP_OK) {
         s_initialized = true;
     }
@@ -139,23 +150,23 @@ void ac_client_register_callbacks(ac_device_status_callback_t status_cb,
     s_online_cb = online_cb;
     s_provisioned_cb = provisioned_cb;
 
-    sh_client_callbacks_t callbacks = {
+    sh_controller_callbacks_t callbacks = {
         .feature_status_cb = sh_feature_status_cb,
         .online_cb = sh_online_cb,
         .provisioned_cb = sh_provisioned_cb,
         .profile_cb = sh_profile_cb,
     };
-    sh_client_register_callbacks(&callbacks);
+    sh_controller_register_callbacks(&callbacks);
 }
 
 uint8_t ac_get_device_count(void)
 {
-    return sh_client_get_device_count();
+    return sh_controller_get_device_count();
 }
 
 uint8_t ac_get_online_device_count(void)
 {
-    return sh_client_get_online_device_count();
+    return sh_controller_get_online_device_count();
 }
 
 uint8_t ac_get_device_list(ac_device_info_t *device_list, uint8_t max_devices)
@@ -165,7 +176,7 @@ uint8_t ac_get_device_list(ac_device_info_t *device_list, uint8_t max_devices)
     }
 
     uint8_t list_max = max_devices > MAX_AC_SERVERS ? MAX_AC_SERVERS : max_devices;
-    uint8_t count = sh_client_get_device_list(s_sh_device_list, list_max);
+    uint8_t count = sh_controller_get_device_list(s_sh_device_list, list_max);
     for (uint8_t i = 0; i < count; i++) {
         map_device_info(&s_sh_device_list[i], &device_list[i]);
     }
@@ -177,7 +188,7 @@ esp_err_t ac_get_device_info_by_index(uint8_t index, ac_device_info_t *device_in
     if (!device_info) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err = sh_client_get_device_by_index(index, &s_sh_device_tmp);
+    esp_err_t err = sh_controller_get_device_by_index(index, &s_sh_device_tmp);
     if (err == ESP_OK) {
         map_device_info(&s_sh_device_tmp, device_info);
     }
@@ -189,7 +200,7 @@ esp_err_t ac_get_device_info_by_addr(uint16_t device_addr, ac_device_info_t *dev
     if (!device_info) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err = sh_client_get_device_by_addr(device_addr, &s_sh_device_tmp);
+    esp_err_t err = sh_controller_get_device_by_addr(device_addr, &s_sh_device_tmp);
     if (err == ESP_OK) {
         map_device_info(&s_sh_device_tmp, device_info);
     }
@@ -211,7 +222,7 @@ esp_err_t ac_send_command_by_addr(uint16_t device_addr, ac_status_type_t command
     if (!feature_id) {
         return ESP_ERR_INVALID_ARG;
     }
-    return sh_client_set_feature(device_addr, feature_id, value);
+    return sh_controller_set_feature(device_addr, feature_id, value);
 }
 
 esp_err_t ac_get_status_by_index(uint8_t device_index, ac_status_type_t status_type)
@@ -229,7 +240,7 @@ esp_err_t ac_get_status_by_addr(uint16_t device_addr, ac_status_type_t status_ty
     if (!feature_id) {
         return ESP_ERR_INVALID_ARG;
     }
-    return sh_client_get_feature(device_addr, feature_id);
+    return sh_controller_get_feature(device_addr, feature_id);
 }
 
 esp_err_t ac_send_command_to_all_online(ac_status_type_t command_type, uint8_t value)
@@ -238,12 +249,12 @@ esp_err_t ac_send_command_to_all_online(ac_status_type_t command_type, uint8_t v
     if (!feature_id) {
         return ESP_ERR_INVALID_ARG;
     }
-    return sh_client_group_set_feature(feature_id, value);
+    return sh_controller_group_set_feature(feature_id, value);
 }
 
 esp_err_t ac_refresh_all_device_status(void)
 {
-    return sh_client_refresh_all();
+    return sh_controller_refresh_all();
 }
 
 esp_err_t ac_set_device_name(uint16_t device_addr, const char *name)
@@ -255,42 +266,42 @@ esp_err_t ac_set_device_name(uint16_t device_addr, const char *name)
 
 esp_err_t ac_client_set_power(uint16_t server_addr, uint8_t power_state)
 {
-    return sh_client_set_feature(server_addr, SH_FEATURE_ID_POWER, power_state);
+    return sh_controller_set_feature(server_addr, SH_FEATURE_ID_POWER, power_state);
 }
 
 esp_err_t ac_client_get_power(uint16_t server_addr)
 {
-    return sh_client_get_feature(server_addr, SH_FEATURE_ID_POWER);
+    return sh_controller_get_feature(server_addr, SH_FEATURE_ID_POWER);
 }
 
 esp_err_t ac_client_set_temperature(uint16_t server_addr, uint8_t temperature)
 {
-    return sh_client_set_feature(server_addr, SH_FEATURE_ID_TEMPERATURE, temperature);
+    return sh_controller_set_feature(server_addr, SH_FEATURE_ID_TEMPERATURE, temperature);
 }
 
 esp_err_t ac_client_get_temperature(uint16_t server_addr)
 {
-    return sh_client_get_feature(server_addr, SH_FEATURE_ID_TEMPERATURE);
+    return sh_controller_get_feature(server_addr, SH_FEATURE_ID_TEMPERATURE);
 }
 
 esp_err_t ac_client_set_mode(uint16_t server_addr, uint8_t mode)
 {
-    return sh_client_set_feature(server_addr, SH_FEATURE_ID_MODE, mode);
+    return sh_controller_set_feature(server_addr, SH_FEATURE_ID_MODE, mode);
 }
 
 esp_err_t ac_client_get_mode(uint16_t server_addr)
 {
-    return sh_client_get_feature(server_addr, SH_FEATURE_ID_MODE);
+    return sh_controller_get_feature(server_addr, SH_FEATURE_ID_MODE);
 }
 
 esp_err_t ac_client_set_fan_speed(uint16_t server_addr, uint8_t fan_speed)
 {
-    return sh_client_set_feature(server_addr, SH_FEATURE_ID_FAN_SPEED, fan_speed);
+    return sh_controller_set_feature(server_addr, SH_FEATURE_ID_FAN_SPEED, fan_speed);
 }
 
 esp_err_t ac_client_get_fan_speed(uint16_t server_addr)
 {
-    return sh_client_get_feature(server_addr, SH_FEATURE_ID_FAN_SPEED);
+    return sh_controller_get_feature(server_addr, SH_FEATURE_ID_FAN_SPEED);
 }
 
 void ac_ble_mesh_store_info(void)
@@ -309,67 +320,67 @@ void ac_add_server_addr(uint16_t addr)
 
 uint8_t ac_get_num_servers(void)
 {
-    return sh_client_get_device_count();
+    return sh_controller_get_device_count();
 }
 
 uint16_t ac_get_server_addr_by_index(uint8_t index)
 {
-    return sh_client_get_device_addr_by_index(index);
+    return sh_controller_get_device_addr_by_index(index);
 }
 
 bool ac_is_server_online(uint16_t server_addr)
 {
-    return sh_client_is_device_online(server_addr);
+    return sh_controller_is_device_online(server_addr);
 }
 
 bool ac_is_device_set_cmd_responsive(uint16_t device_addr)
 {
-    return sh_client_is_device_set_cmd_responsive(device_addr);
+    return sh_controller_is_device_set_cmd_responsive(device_addr);
 }
 
 esp_err_t ac_disconnect_device(uint16_t device_addr)
 {
-    return sh_client_disconnect_device(device_addr);
+    return sh_controller_disconnect_device(device_addr);
 }
 
 esp_err_t ac_reconnect_device(uint16_t device_addr)
 {
-    return sh_client_reconnect_device(device_addr);
+    return sh_controller_reconnect_device(device_addr);
 }
 
 esp_err_t ac_add_device_to_filter(uint16_t device_addr)
 {
-    return sh_client_add_device_to_filter(device_addr);
+    return sh_controller_add_device_to_filter(device_addr);
 }
 
 esp_err_t ac_remove_device_from_filter(uint16_t device_addr)
 {
-    return sh_client_remove_device_from_filter(device_addr);
+    return sh_controller_remove_device_from_filter(device_addr);
 }
 
 bool ac_is_device_filtered(uint16_t device_addr)
 {
-    return sh_client_is_device_filtered(device_addr);
+    return sh_controller_is_device_filtered(device_addr);
 }
 
 bool ac_is_device_blacklisted(uint16_t device_addr)
 {
-    return sh_client_is_device_blacklisted(device_addr);
+    return sh_controller_is_device_blacklisted(device_addr);
 }
 
 esp_err_t ac_toggle_device_connection(uint16_t device_addr)
 {
-    return sh_client_toggle_device_connection(device_addr);
+    return sh_controller_toggle_device_connection(device_addr);
 }
 
 esp_err_t ac_add_device_to_group(uint16_t device_addr)
 {
-    return sh_client_add_device_to_group(device_addr);
+    return sh_controller_add_device_to_group(device_addr);
 }
 
 esp_err_t ac_remove_device_from_group(uint16_t device_addr)
 {
-    return sh_client_remove_device_from_group(device_addr);
+    return sh_controller_remove_device_from_group(device_addr);
 }
 
 esp_err_t ac_send_group_command(ac_status_type_t command_type, uint8_t value)
@@ -378,42 +389,42 @@ esp_err_t ac_send_group_command(ac_status_type_t command_type, uint8_t value)
     if (!feature_id) {
         return ESP_ERR_INVALID_ARG;
     }
-    return sh_client_group_set_feature(feature_id, value);
+    return sh_controller_group_set_feature(feature_id, value);
 }
 
 uint16_t ac_get_group_address(void)
 {
-    return sh_client_get_group_address();
+    return sh_controller_get_group_address();
 }
 
 bool ac_is_device_in_group(uint16_t device_addr)
 {
-    return sh_client_is_device_in_group(device_addr);
+    return sh_controller_is_device_in_group(device_addr);
 }
 
 esp_err_t ac_send_disconnect_notify(uint16_t device_addr)
 {
-    return sh_client_send_disconnect_notify(device_addr);
+    return sh_controller_send_disconnect_notify(device_addr);
 }
 
 esp_err_t ac_remove_device_completely(uint16_t device_addr)
 {
-    return sh_client_remove_device_completely(device_addr);
+    return sh_controller_remove_device_completely(device_addr);
 }
 
 esp_err_t ac_perform_key_refresh(void)
 {
-    return sh_client_perform_key_refresh();
+    return sh_controller_perform_key_refresh();
 }
 
 bool ac_is_key_refresh_in_progress(void)
 {
-    return sh_client_is_key_refresh_in_progress();
+    return sh_controller_is_key_refresh_in_progress();
 }
 
 ac_send_state_t ac_get_send_state(void)
 {
-    switch (sh_client_get_send_state()) {
+    switch (sh_controller_get_send_state()) {
     case SH_SEND_STATE_SENDING:
         return AC_SEND_STATE_SENDING;
     case SH_SEND_STATE_IDLE:
@@ -424,10 +435,10 @@ ac_send_state_t ac_get_send_state(void)
 
 uint8_t ac_get_queue_size(void)
 {
-    return sh_client_get_queue_size();
+    return sh_controller_get_queue_size();
 }
 
 void ac_clear_msg_queue(void)
 {
-    sh_client_clear_queue();
+    sh_controller_clear_queue();
 }

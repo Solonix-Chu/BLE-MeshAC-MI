@@ -596,6 +596,15 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# Smart Home Mesh Roles
+#
+CONFIG_SH_ROLE_PROVISIONER_CONTROLLER=y
+# CONFIG_SH_ROLE_REMOTE_CONTROLLER is not set
+# CONFIG_SH_ROLE_GATEWAY_RELAY is not set
+CONFIG_SH_BLE_BRIDGE_ENABLE=y
+# end of Smart Home Mesh Roles
+
+#
 # Device Controller Configuration
 #
 CONFIG_DEVICE_CONTROLLER_BUTTON_UP_GPIO=12
@@ -1048,7 +1057,8 @@ CONFIG_BLE_MESH_DEINIT=y
 #
 # BLE Mesh and BLE coexistence support
 #
-# CONFIG_BLE_MESH_SUPPORT_BLE_ADV is not set
+CONFIG_BLE_MESH_SUPPORT_BLE_ADV=y
+CONFIG_BLE_MESH_BLE_ADV_BUF_COUNT=3
 # CONFIG_BLE_MESH_SUPPORT_BLE_SCAN is not set
 # end of BLE Mesh and BLE coexistence support
 

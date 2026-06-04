@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -20,6 +21,7 @@
 #include "ac_control.h"
 #include "display.h"
 #include "device_controller.h"
+#include "smarthome_ble_bridge.h"
 
 #define TAG "Client_Main"
 
@@ -55,6 +57,18 @@ void app_main(void)
         ESP_LOGE(TAG, "AC BLE Mesh client init failed (err %d)", err);
         return;
     }
+
+#if CONFIG_SH_BLE_BRIDGE_ENABLE
+    sh_ble_bridge_config_t bridge_config = {
+        .device_name = "MeshAC Bridge",
+        .enable_notifications = true,
+    };
+    err = sh_ble_bridge_init(&bridge_config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BLE app bridge init failed (%s), continuing without phone bridge",
+                 esp_err_to_name(err));
+    }
+#endif
     
     // Initialize device controller
     err = device_controller_init();

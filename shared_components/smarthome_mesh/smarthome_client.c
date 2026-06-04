@@ -416,12 +416,18 @@ static void vendor_model_cb(esp_ble_mesh_model_cb_event_t event,
 {
     switch (event) {
     case ESP_BLE_MESH_MODEL_OPERATION_EVT:
+        ESP_LOGI(TAG, "Recv operation opcode=0x%06" PRIx32 " from 0x%04x",
+                 param->model_operation.opcode,
+                 param->model_operation.ctx ? param->model_operation.ctx->addr : 0);
         handle_operation(param->model_operation.opcode,
                          param->model_operation.msg,
                          param->model_operation.length,
                          param->model_operation.ctx->addr);
         break;
     case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
+        ESP_LOGI(TAG, "Recv publish opcode=0x%06" PRIx32 " from 0x%04x",
+                 param->client_recv_publish_msg.opcode,
+                 param->client_recv_publish_msg.ctx ? param->client_recv_publish_msg.ctx->addr : 0);
         handle_operation(param->client_recv_publish_msg.opcode,
                          param->client_recv_publish_msg.msg,
                          param->client_recv_publish_msg.length,
@@ -524,6 +530,13 @@ static void provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
                 SH_PROV_OWN_ADDR, s_key.app_idx, SH_MODEL_ID_CLIENT, SH_COMPANY_ID);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Local model bind failed: %s", esp_err_to_name(err));
+                break;
+            }
+            err = esp_ble_mesh_model_subscribe_group_addr(SH_PROV_OWN_ADDR, SH_COMPANY_ID,
+                                                          SH_MODEL_ID_CLIENT,
+                                                          SH_GROUP_ADDR_DEFAULT);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Local controller group subscribe failed: %s", esp_err_to_name(err));
             }
         }
         break;

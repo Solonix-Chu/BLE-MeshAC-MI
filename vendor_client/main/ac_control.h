@@ -11,7 +11,7 @@ extern "C" {
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_ble_mesh_defs.h"
-#include "smarthome_client.h"
+#include "smarthome_controller.h"
 #include "smarthome_profiles.h"
 
 #define AC_ALL_DEVICE_ID        0xFF

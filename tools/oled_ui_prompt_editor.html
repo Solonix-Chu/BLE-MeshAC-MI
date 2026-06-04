@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OLED UI 布局编辑器</title>
+  <style>
+    :root {
+      --bg: #eef1ed;
+      --panel: #fbfcf8;
+      --line: #c8cec4;
+      --ink: #1a211b;
+      --muted: #667067;
+      --accent: #117c6f;
+      --accent-2: #b06a18;
+      --danger: #a0392d;
+      --shadow: 0 10px 28px rgba(26, 33, 27, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.warn {
+      color: var(--danger);
+      border-color: #d3a29b;
+    }
+
+    select,
+    input,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 7px 8px;
+      min-height: 34px;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+
+    textarea {
+      min-height: 210px;
+      resize: vertical;
+      line-height: 1.45;
+      white-space: pre;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 280px minmax(440px, 1fr) 360px;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .topbar {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: auto 180px 180px 1fr auto auto;
+      gap: 10px;
+      align-items: end;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .title {
+      align-self: center;
+      display: grid;
+      gap: 2px;
+      min-width: 220px;
+    }
+
+    .title strong {
+      font-size: 16px;
+    }
+
+    .title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .panel {
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .panel h2 {
+      margin: 0;
+      padding: 10px 12px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--line);
+      background: #f5f7f1;
+    }
+
+    .panel-body {
+      padding: 12px;
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .row {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .triple {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    .canvas-panel {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .stage-wrap {
+      display: grid;
+      place-items: center;
+      min-height: 0;
+      background: #dfe5dc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .screen-shell {
+      background: #222820;
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: inset 0 0 0 1px #3b443b, 0 14px 28px rgba(26, 33, 27, 0.25);
+    }
+
+    canvas {
+      display: block;
+      width: 768px;
+      max-width: calc(100vw - 760px);
+      aspect-ratio: 2 / 1;
+      background: #fff;
+      image-rendering: pixelated;
+      border: 1px solid #000;
+      cursor: crosshair;
+    }
+
+    .stage-footer {
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .commands {
+      display: grid;
+      gap: 6px;
+    }
+
+    .cmd-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    .cmd-row.active {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .cmd-index {
+      color: var(--accent-2);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cmd-main {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cmd-meta {
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hint-line {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .copy-status {
+      color: var(--accent);
+      min-height: 18px;
+      font-size: 12px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 4px;
+      background: #fff;
+    }
+
+    .segmented button {
+      border: 0;
+      padding: 7px 6px;
+      background: transparent;
+    }
+
+    .segmented button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    @media (max-width: 1180px) {
+      .app {
+        grid-template-columns: 280px 1fr;
+      }
+
+      .right-panel {
+        grid-column: 1 / -1;
+      }
+
+      canvas {
+        max-width: calc(100vw - 360px);
+      }
+    }
+
+    @media (max-width: 820px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .title,
+      .wide-mobile {
+        grid-column: 1 / -1;
+      }
+
+      canvas {
+        width: 640px;
+        max-width: calc(100vw - 76px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="topbar">
+      <div class="title">
+        <strong>OLED UI 布局编辑器</strong>
+        <span>128x64 / smarthome_ui frame</span>
+      </div>
+      <label>
+        视图
+        <select id="viewSelect">
+          <option value="summary">Summary</option>
+          <option value="menu">Menu</option>
+          <option value="edit">Edit</option>
+        </select>
+      </label>
+      <label>
+        设备
+        <select id="profileSelect">
+          <option value="ac">Air Conditioner</option>
+          <option value="light">Light</option>
+          <option value="switch">Switch</option>
+          <option value="tv">TV</option>
+          <option value="curtain">Curtain</option>
+        </select>
+      </label>
+      <div class="segmented wide-mobile" id="viewButtons">
+        <button data-view="summary" class="active">Summary</button>
+        <button data-view="menu">Menu</button>
+        <button data-view="edit">Edit</button>
+      </div>
+      <button id="resetPreset">重载当前布局</button>
+      <button class="primary" id="exportPrompt">生成提示词</button>
+    </section>
+
+    <section class="panel">
+      <h2>对象</h2>
+      <div class="panel-body stack">
+        <div class="row">
+          <button id="addText">新增文本</button>
+          <button id="addBar">新增进度条</button>
+        </div>
+        <div class="row">
+          <button id="duplicateCmd">复制对象</button>
+          <button class="warn" id="deleteCmd">删除对象</button>
+        </div>
+        <div class="commands" id="commandList"></div>
+      </div>
+    </section>
+
+    <section class="canvas-panel">
+      <div class="panel">
+        <h2>预览</h2>
+        <div class="panel-body">
+          <div class="stage-wrap">
+            <div class="screen-shell">
+              <canvas id="oledCanvas" width="128" height="64"></canvas>
+            </div>
+          </div>
+          <div class="stage-footer">
+            <span id="pointerInfo">x: -, y: -</span>
+            <span>拖拽移动，右下角拖拽缩放</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel right-panel">
+      <h2>属性 / 导出</h2>
+      <div class="panel-body stack">
+        <div class="row">
+          <label>
+            类型
+            <select id="cmdType">
+              <option value="text">TEXT</option>
+              <option value="bar">BAR</option>
+            </select>
+          </label>
+          <label>
+            名称
+            <input id="cmdName" maxlength="24">
+          </label>
+        </div>
+
+        <div class="triple">
+          <label>
+            X
+            <input id="cmdX" type="number" min="0" max="127">
+          </label>
+          <label>
+            Y
+            <input id="cmdY" type="number" min="0" max="63">
+          </label>
+          <label>
+            W
+            <input id="cmdW" type="number" min="1" max="128">
+          </label>
+        </div>
+
+        <div class="triple">
+          <label>
+            H
+            <input id="cmdH" type="number" min="1" max="64">
+          </label>
+          <label id="fontLabel">
+            字体
+            <select id="cmdFont">
+              <option value="small">SMALL</option>
+              <option value="medium">MEDIUM</option>
+              <option value="large">LARGE</option>
+            </select>
+          </label>
+          <label id="alignLabel">
+            对齐
+            <select id="cmdAlign">
+              <option value="left">LEFT</option>
+              <option value="center">CENTER</option>
+              <option value="right">RIGHT</option>
+            </select>
+          </label>
+        </div>
+
+        <label id="textLabel">
+          文本
+          <input id="cmdText" maxlength="31">
+        </label>
+
+        <label id="percentLabel">
+          进度百分比
+          <input id="cmdPercent" type="number" min="0" max="100">
+        </label>
+
+        <div class="row">
+          <button id="moveUp">上移层级</button>
+          <button id="moveDown">下移层级</button>
+        </div>
+
+        <label>
+          导出提示词
+          <textarea id="promptOutput" spellcheck="false"></textarea>
+        </label>
+        <div class="row">
+          <button id="copyPrompt">复制提示词</button>
+          <button id="downloadJson">导出 JSON</button>
+        </div>
+        <div class="copy-status" id="copyStatus"></div>
+        <div class="hint-line">提示词会包含当前视图、设备、对象表和代码落点，便于按布局结果修改 `smarthome_ui.c`。</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const SCREEN_W = 128;
+    const SCREEN_H = 64;
+
+    const profiles = {
+      ac: {
+        name: 'Air Conditioner',
+        device: 'AC Device',
+        online: true,
+        power: 'ON',
+        primaryName: 'Temperature',
+        primaryValue: '25C',
+        percent: 64,
+        summary: 'Mode Cool Fan Low',
+        menu: [
+          ['Power', 'ON'],
+          ['Temperature', '25C'],
+          ['Mode', 'Cool']
+        ],
+        editName: 'Temperature',
+        editValue: '25C',
+        editPercent: 64
+      },
+      light: {
+        name: 'Light',
+        device: 'Light',
+        online: true,
+        power: 'ON',
+        primaryName: 'Brightness',
+        primaryValue: '50%',
+        percent: 50,
+        summary: 'light',
+        menu: [
+          ['Power', 'ON'],
+          ['Brightness', '50%'],
+          ['Device Type', 'Light']
+        ],
+        editName: 'Brightness',
+        editValue: '50%',
+        editPercent: 50
+      },
+      switch: {
+        name: 'Switch',
+        device: 'Switch',
+        online: true,
+        power: 'ON',
+        primaryName: 'Power',
+        primaryValue: 'ON',
+        percent: 0,
+        summary: 'switch',
+        menu: [
+          ['Power', 'ON'],
+          ['Device Type', 'Switch']
+        ],
+        editName: 'Power',
+        editValue: 'ON',
+        editPercent: 0
+      },
+      tv: {
+        name: 'TV',
+        device: 'TV',
+        online: true,
+        power: 'ON',
+        primaryName: 'Volume',
+        primaryValue: '20%',
+        percent: 20,
+        summary: 'Channel 1 Mute OFF Input HDMI1',
+        menu: [
+          ['Power', 'ON'],
+          ['Volume', '20%'],
+          ['Channel', '1']
+        ],
+        editName: 'Volume',
+        editValue: '20%',
+        editPercent: 20
+      },
+      curtain: {
+        name: 'Curtain',
+        device: 'Curtain',
+        online: true,
+        power: 'ON',
+        primaryName: 'Position',
+        primaryValue: '0%',
+        percent: 0,
+        summary: 'curtain',
+        menu: [
+          ['Power', 'ON'],
+          ['Position', '0%'],
+          ['Device Type', 'Curtain']
+        ],
+        editName: 'Position',
+        editValue: '0%',
+        editPercent: 0
+      }
+    };
+
+    const state = {
+      view: 'summary',
+      profile: 'ac',
+      commands: [],
+      selected: 0,
+      drag: null
+    };
+
+    const canvas = document.getElementById('oledCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const els = {
+      viewSelect: document.getElementById('viewSelect'),
+      profileSelect: document.getElementById('profileSelect'),
+      viewButtons: document.getElementById('viewButtons'),
+      resetPreset: document.getElementById('resetPreset'),
+      exportPrompt: document.getElementById('exportPrompt'),
+      addText: document.getElementById('addText'),
+      addBar: document.getElementById('addBar'),
+      duplicateCmd: document.getElementById('duplicateCmd'),
+      deleteCmd: document.getElementById('deleteCmd'),
+      commandList: document.getElementById('commandList'),
+      cmdType: document.getElementById('cmdType'),
+      cmdName: document.getElementById('cmdName'),
+      cmdX: document.getElementById('cmdX'),
+      cmdY: document.getElementById('cmdY'),
+      cmdW: document.getElementById('cmdW'),
+      cmdH: document.getElementById('cmdH'),
+      cmdFont: document.getElementById('cmdFont'),
+      cmdAlign: document.getElementById('cmdAlign'),
+      cmdText: document.getElementById('cmdText'),
+      cmdPercent: document.getElementById('cmdPercent'),
+      fontLabel: document.getElementById('fontLabel'),
+      alignLabel: document.getElementById('alignLabel'),
+      textLabel: document.getElementById('textLabel'),
+      percentLabel: document.getElementById('percentLabel'),
+      moveUp: document.getElementById('moveUp'),
+      moveDown: document.getElementById('moveDown'),
+      promptOutput: document.getElementById('promptOutput'),
+      copyPrompt: document.getElementById('copyPrompt'),
+      downloadJson: document.getElementById('downloadJson'),
+      copyStatus: document.getElementById('copyStatus'),
+      pointerInfo: document.getElementById('pointerInfo')
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function deepCopy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function profile() {
+      return profiles[state.profile];
+    }
+
+    function headerCommands(p) {
+      return [
+        textCmd('device_name', 0, 0, 78, 14, 'small', 'left', p.device),
+        textCmd('online', 80, 0, 16, 14, 'small', 'center', p.online ? '*' : '-'),
+        textCmd('power', 98, 0, 30, 14, 'small', 'right', p.power)
+      ];
+    }
+
+    function textCmd(name, x, y, w, h, font, align, text) {
+      return { type: 'text', name, x, y, w, h, font, align, text };
+    }
+
+    function barCmd(name, x, y, w, h, percent) {
+      return { type: 'bar', name, x, y, w, h, percent };
+    }
+
+    function presetCommands(view, p) {
+      if (view === 'menu') {
+        return [
+          ...headerCommands(p),
+          ...p.menu.slice(0, 3).map((row, index) =>
+            textCmd(`menu_row_${index}`, 0, 16 + index * 15, 128, 14,
+              index === 0 ? 'medium' : 'small', 'left',
+              `${index === 0 ? '>' : ' '} ${row[0]} ${row[1]}`))
+        ];
+      }
+
+      if (view === 'edit') {
+        const commands = [
+          ...headerCommands(p),
+          textCmd('edit_name', 0, 16, 128, 13, 'small', 'center', p.editName),
+          textCmd('edit_value', 0, 29, 128, 21, 'large', 'center', p.editValue)
+        ];
+        if (p.editPercent > 0 || p.editName === 'Brightness' || p.editName === 'Position' || p.editName === 'Volume') {
+          commands.push(barCmd('edit_bar', 4, 53, 120, 4, p.editPercent));
+        } else {
+          commands.push(textCmd('edit_hint', 0, 51, 128, 12, 'small', 'center', 'CENTER OK'));
+        }
+        return commands;
+      }
+
+      const commands = [
+        ...headerCommands(p),
+        textCmd('primary_value', 0, 16, 62, 24, 'large', 'center', p.primaryValue),
+        textCmd('primary_name', 66, 18, 62, 16, 'small', 'left', p.primaryName)
+      ];
+      if (p.percent > 0 || ['Brightness', 'Position', 'Volume', 'Temperature'].includes(p.primaryName)) {
+        commands.push(barCmd('primary_bar', 4, 39, 120, 4, p.percent));
+      }
+      commands.push(textCmd('summary', 0, 47, 128, 16, 'small', 'center', p.summary));
+      return commands;
+    }
+
+    function loadPreset() {
+      state.commands = presetCommands(state.view, profile());
+      state.selected = Math.min(state.selected, state.commands.length - 1);
+      if (state.selected < 0) state.selected = 0;
+      syncAll();
+    }
+
+    function nativePoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: clamp(Math.round((event.clientX - rect.left) * SCREEN_W / rect.width), 0, SCREEN_W),
+        y: clamp(Math.round((event.clientY - rect.top) * SCREEN_H / rect.height), 0, SCREEN_H)
+      };
+    }
+
+    function fontSize(font) {
+      if (font === 'large') return 18;
+      if (font === 'medium') return 12;
+      return 9;
+    }
+
+    function drawText(cmd) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cmd.x, cmd.y, cmd.w, cmd.h);
+      ctx.clip();
+      ctx.fillStyle = '#000';
+      ctx.font = `${fontSize(cmd.font)}px Arial, sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = cmd.align;
+      const tx = cmd.align === 'center' ? cmd.x + cmd.w / 2 :
+        cmd.align === 'right' ? cmd.x + cmd.w : cmd.x;
+      const yOffset = cmd.font === 'large' ? 0 : 1;
+      ctx.fillText(cmd.text || '', tx, cmd.y + yOffset);
+      ctx.restore();
+    }
+
+    function drawBar(cmd) {
+      ctx.save();
+      ctx.strokeStyle = '#000';
+      ctx.fillStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cmd.x + 0.5, cmd.y + 0.5, Math.max(1, cmd.w - 1), Math.max(1, cmd.h - 1));
+      const fillW = Math.max(0, Math.round((cmd.w - 2) * clamp(cmd.percent || 0, 0, 100) / 100));
+      if (fillW > 0 && cmd.h > 2) {
+        ctx.fillRect(cmd.x + 1, cmd.y + 1, fillW, cmd.h - 2);
+      }
+      ctx.restore();
+    }
+
+    function drawSelection(cmd) {
+      ctx.save();
+      ctx.setLineDash([2, 1]);
+      ctx.strokeStyle = '#117c6f';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cmd.x + 0.5, cmd.y + 0.5, Math.max(1, cmd.w - 1), Math.max(1, cmd.h - 1));
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#117c6f';
+      ctx.fillRect(cmd.x + cmd.w - 3, cmd.y + cmd.h - 3, 3, 3);
+      ctx.restore();
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, SCREEN_W, SCREEN_H);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+      for (const cmd of state.commands) {
+        if (cmd.type === 'bar') drawBar(cmd);
+        else drawText(cmd);
+      }
+      const selected = state.commands[state.selected];
+      if (selected) drawSelection(selected);
+    }
+
+    function renderList() {
+      els.commandList.innerHTML = '';
+      state.commands.forEach((cmd, index) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = `cmd-row ${index === state.selected ? 'active' : ''}`;
+        row.innerHTML = `
+          <span class="cmd-index">${index + 1}</span>
+          <span class="cmd-main">${cmd.name || cmd.type}</span>
+          <span class="cmd-meta">${cmd.x},${cmd.y} ${cmd.w}x${cmd.h}</span>
+        `;
+        row.addEventListener('click', () => {
+          state.selected = index;
+          syncAll();
+        });
+        els.commandList.appendChild(row);
+      });
+    }
+
+    function selectedCmd() {
+      return state.commands[state.selected] || null;
+    }
+
+    function syncFields() {
+      const cmd = selectedCmd();
+      const disabled = !cmd;
+      for (const input of [els.cmdType, els.cmdName, els.cmdX, els.cmdY, els.cmdW, els.cmdH,
+        els.cmdFont, els.cmdAlign, els.cmdText, els.cmdPercent]) {
+        input.disabled = disabled;
+      }
+      if (!cmd) return;
+
+      els.cmdType.value = cmd.type;
+      els.cmdName.value = cmd.name || '';
+      els.cmdX.value = cmd.x;
+      els.cmdY.value = cmd.y;
+      els.cmdW.value = cmd.w;
+      els.cmdH.value = cmd.h;
+      els.cmdFont.value = cmd.font || 'small';
+      els.cmdAlign.value = cmd.align || 'left';
+      els.cmdText.value = cmd.text || '';
+      els.cmdPercent.value = cmd.percent ?? 0;
+
+      const isText = cmd.type === 'text';
+      els.fontLabel.style.display = isText ? 'grid' : 'none';
+      els.alignLabel.style.display = isText ? 'grid' : 'none';
+      els.textLabel.style.display = isText ? 'grid' : 'none';
+      els.percentLabel.style.display = isText ? 'none' : 'grid';
+    }
+
+    function syncViewControls() {
+      els.viewSelect.value = state.view;
+      els.profileSelect.value = state.profile;
+      for (const btn of els.viewButtons.querySelectorAll('button')) {
+        btn.classList.toggle('active', btn.dataset.view === state.view);
+      }
+    }
+
+    function syncAll() {
+      syncViewControls();
+      render();
+      renderList();
+      syncFields();
+      els.promptOutput.value = buildPrompt();
+    }
+
+    function updateSelectedFromFields() {
+      const cmd = selectedCmd();
+      if (!cmd) return;
+      cmd.type = els.cmdType.value;
+      cmd.name = els.cmdName.value.trim() || cmd.type;
+      cmd.x = clamp(parseInt(els.cmdX.value || 0, 10), 0, SCREEN_W - 1);
+      cmd.y = clamp(parseInt(els.cmdY.value || 0, 10), 0, SCREEN_H - 1);
+      cmd.w = clamp(parseInt(els.cmdW.value || 1, 10), 1, SCREEN_W - cmd.x);
+      cmd.h = clamp(parseInt(els.cmdH.value || 1, 10), 1, SCREEN_H - cmd.y);
+      if (cmd.type === 'text') {
+        cmd.font = els.cmdFont.value;
+        cmd.align = els.cmdAlign.value;
+        cmd.text = els.cmdText.value;
+        delete cmd.percent;
+      } else {
+        cmd.percent = clamp(parseInt(els.cmdPercent.value || 0, 10), 0, 100);
+        delete cmd.font;
+        delete cmd.align;
+        delete cmd.text;
+      }
+      syncAll();
+    }
+
+    function hitTest(point) {
+      for (let i = state.commands.length - 1; i >= 0; i--) {
+        const cmd = state.commands[i];
+        if (point.x >= cmd.x && point.x <= cmd.x + cmd.w &&
+            point.y >= cmd.y && point.y <= cmd.y + cmd.h) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function isResizeHit(cmd, point) {
+      return point.x >= cmd.x + cmd.w - 5 && point.x <= cmd.x + cmd.w + 2 &&
+        point.y >= cmd.y + cmd.h - 5 && point.y <= cmd.y + cmd.h + 2;
+    }
+
+    canvas.addEventListener('pointerdown', (event) => {
+      const point = nativePoint(event);
+      const index = hitTest(point);
+      if (index < 0) return;
+      state.selected = index;
+      const cmd = selectedCmd();
+      state.drag = {
+        mode: isResizeHit(cmd, point) ? 'resize' : 'move',
+        startX: point.x,
+        startY: point.y,
+        original: deepCopy(cmd)
+      };
+      canvas.setPointerCapture(event.pointerId);
+      syncAll();
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+      const point = nativePoint(event);
+      els.pointerInfo.textContent = `x: ${point.x}, y: ${point.y}`;
+      if (!state.drag) return;
+
+      const cmd = selectedCmd();
+      const dx = point.x - state.drag.startX;
+      const dy = point.y - state.drag.startY;
+      if (state.drag.mode === 'move') {
+        cmd.x = clamp(state.drag.original.x + dx, 0, SCREEN_W - cmd.w);
+        cmd.y = clamp(state.drag.original.y + dy, 0, SCREEN_H - cmd.h);
+      } else {
+        cmd.w = clamp(state.drag.original.w + dx, 1, SCREEN_W - cmd.x);
+        cmd.h = clamp(state.drag.original.h + dy, 1, SCREEN_H - cmd.y);
+      }
+      syncAll();
+    });
+
+    canvas.addEventListener('pointerup', (event) => {
+      state.drag = null;
+      canvas.releasePointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      els.pointerInfo.textContent = 'x: -, y: -';
+    });
+
+    function addCommand(type) {
+      const cmd = type === 'bar'
+        ? barCmd('new_bar', 8, 52, 112, 5, 50)
+        : textCmd('new_text', 8, 20, 80, 12, 'small', 'left', 'Text');
+      state.commands.push(cmd);
+      state.selected = state.commands.length - 1;
+      syncAll();
+    }
+
+    function moveSelected(delta) {
+      const next = state.selected + delta;
+      if (next < 0 || next >= state.commands.length) return;
+      const [cmd] = state.commands.splice(state.selected, 1);
+      state.commands.splice(next, 0, cmd);
+      state.selected = next;
+      syncAll();
+    }
+
+    function commandToLine(cmd, index) {
+      if (cmd.type === 'bar') {
+        return `${index + 1}. BAR  name=${cmd.name}  x=${cmd.x} y=${cmd.y} w=${cmd.w} h=${cmd.h} percent=${cmd.percent}`;
+      }
+      return `${index + 1}. TEXT name=${cmd.name}  x=${cmd.x} y=${cmd.y} w=${cmd.w} h=${cmd.h} font=${cmd.font.toUpperCase()} align=${cmd.align.toUpperCase()} text="${cmd.text}"`;
+    }
+
+    function commandToC(cmd) {
+      if (cmd.type === 'bar') {
+        return `add_bar(frame, ${cmd.x}, ${cmd.y}, ${cmd.w}, ${cmd.h}, ${cmd.percent});`;
+      }
+      return `add_text(frame, ${cmd.x}, ${cmd.y}, ${cmd.w}, ${cmd.h}, SH_UI_FONT_${cmd.font.toUpperCase()}, SH_UI_ALIGN_${cmd.align.toUpperCase()}, "${cmd.text.replaceAll('"', '\\"')}");`;
+    }
+
+    function buildPrompt() {
+      const viewName = state.view === 'summary' ? 'Summary 主界面' :
+        state.view === 'menu' ? 'Menu 菜单界面' : 'Edit 编辑界面';
+      const targetFunc = state.view === 'summary' ? 'build_summary()' :
+        state.view === 'menu' ? 'build_menu()' : 'build_edit()';
+      const lines = state.commands.map(commandToLine).join('\n');
+      const cLines = state.commands.map(commandToC).join('\n');
+      return `请根据下面的 OLED 128x64 布局结果，修改 BLE Mesh 智能家居项目中的共享 UI 布局代码。\n\n目标文件：shared_components/smarthome_ui/smarthome_ui.c\n目标函数：${targetFunc}\n视图：${viewName}\n参考设备：${profile().name}\n屏幕尺寸：128x64\n\n布局对象：\n${lines}\n\n期望效果：\n- client 和 server 继续使用同一套 sh_ui_build_frame() 生成结果。\n- 不要修改 LVGL renderer，只调整 smarthome_ui.c 中 frame 的 add_text/add_bar 坐标、尺寸、字体、对齐和显示内容组织。\n- 所有对象必须保持在 128x64 范围内，文字不要互相重叠。\n- 如需兼容不同 profile，请保持当前 profile-driven 逻辑，只调整布局策略。\n\n可参考的 C 调用顺序：\n${cLines}`;
+    }
+
+    function downloadJson() {
+      const payload = {
+        screen: { width: SCREEN_W, height: SCREEN_H },
+        view: state.view,
+        profile: state.profile,
+        commands: state.commands
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `oled-ui-${state.view}-${state.profile}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    els.viewSelect.addEventListener('change', () => {
+      state.view = els.viewSelect.value;
+      loadPreset();
+    });
+    els.profileSelect.addEventListener('change', () => {
+      state.profile = els.profileSelect.value;
+      loadPreset();
+    });
+    els.viewButtons.addEventListener('click', (event) => {
+      const btn = event.target.closest('button[data-view]');
+      if (!btn) return;
+      state.view = btn.dataset.view;
+      loadPreset();
+    });
+    els.resetPreset.addEventListener('click', loadPreset);
+    els.exportPrompt.addEventListener('click', () => {
+      els.promptOutput.value = buildPrompt();
+      els.promptOutput.focus();
+      els.promptOutput.select();
+    });
+    els.addText.addEventListener('click', () => addCommand('text'));
+    els.addBar.addEventListener('click', () => addCommand('bar'));
+    els.duplicateCmd.addEventListener('click', () => {
+      const cmd = selectedCmd();
+      if (!cmd) return;
+      const copy = deepCopy(cmd);
+      copy.name = `${copy.name || copy.type}_copy`;
+      copy.x = clamp(copy.x + 4, 0, SCREEN_W - copy.w);
+      copy.y = clamp(copy.y + 4, 0, SCREEN_H - copy.h);
+      state.commands.splice(state.selected + 1, 0, copy);
+      state.selected += 1;
+      syncAll();
+    });
+    els.deleteCmd.addEventListener('click', () => {
+      if (!selectedCmd()) return;
+      state.commands.splice(state.selected, 1);
+      state.selected = clamp(state.selected, 0, state.commands.length - 1);
+      syncAll();
+    });
+    els.moveUp.addEventListener('click', () => moveSelected(-1));
+    els.moveDown.addEventListener('click', () => moveSelected(1));
+    els.copyPrompt.addEventListener('click', async () => {
+      els.promptOutput.value = buildPrompt();
+      try {
+        await navigator.clipboard.writeText(els.promptOutput.value);
+        els.copyStatus.textContent = '已复制';
+      } catch (err) {
+        els.promptOutput.focus();
+        els.promptOutput.select();
+        els.copyStatus.textContent = '已选中文本';
+      }
+      setTimeout(() => { els.copyStatus.textContent = ''; }, 1800);
+    });
+    els.downloadJson.addEventListener('click', downloadJson);
+
+    for (const input of [els.cmdType, els.cmdName, els.cmdX, els.cmdY, els.cmdW, els.cmdH,
+      els.cmdFont, els.cmdAlign, els.cmdText, els.cmdPercent]) {
+      input.addEventListener('input', updateSelectedFromFields);
+      input.addEventListener('change', updateSelectedFromFields);
+    }
+
+    loadPreset();
+  </script>
+</body>
+</html>

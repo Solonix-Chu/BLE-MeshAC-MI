@@ -27,6 +27,8 @@ static struct {
     bool is_initialized;
 } s_ui_state;
 
+static char s_pending_message[64];
+
 static const lv_font_t *map_font(sh_ui_font_t font)
 {
     switch (font) {
@@ -250,19 +252,50 @@ static esp_err_t build_and_render(const dc_context_t *context)
     return ESP_OK;
 }
 
-static void safe_message_delete_callback(void *user_data)
+static void hide_message_label_now(void)
+{
+    if (s_ui_state.message_label && lv_obj_is_valid(s_ui_state.message_label)) {
+        lv_obj_add_flag(s_ui_state.message_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void message_hide_async_callback(void *user_data)
 {
     (void)user_data;
-    if (s_ui_state.message_label && lv_obj_is_valid(s_ui_state.message_label)) {
-        lv_obj_del_async(s_ui_state.message_label);
-    }
-    s_ui_state.message_label = NULL;
+    hide_message_label_now();
 }
 
 static void message_timer_callback(void *arg)
 {
     (void)arg;
-    lv_async_call(safe_message_delete_callback, NULL);
+    lv_async_call(message_hide_async_callback, NULL);
+}
+
+static void show_message_async_callback(void *user_data)
+{
+    (void)user_data;
+
+    if (!s_ui_state.is_initialized) {
+        return;
+    }
+
+    if (!s_ui_state.message_label || !lv_obj_is_valid(s_ui_state.message_label)) {
+        s_ui_state.message_label = lv_label_create(lv_layer_top());
+        if (!s_ui_state.message_label) {
+            ESP_LOGW(TAG, "Failed to create message label");
+            return;
+        }
+
+        lv_obj_set_style_text_color(s_ui_state.message_label, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(s_ui_state.message_label, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(s_ui_state.message_label, LV_OPA_80, 0);
+        lv_obj_set_style_pad_all(s_ui_state.message_label, 6, 0);
+    }
+
+    lv_label_set_text(s_ui_state.message_label, s_pending_message);
+    lv_obj_clear_flag(s_ui_state.message_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_center(s_ui_state.message_label);
+    lv_obj_move_foreground(s_ui_state.message_label);
 }
 
 static void boot_timer_callback(void *arg)
@@ -369,20 +402,9 @@ esp_err_t dc_ui_integration_show_message(const char *message, uint32_t duration_
         s_ui_state.message_timer = NULL;
     }
 
-    if (s_ui_state.message_label && lv_obj_is_valid(s_ui_state.message_label)) {
-        lv_obj_del_async(s_ui_state.message_label);
-    }
-    s_ui_state.message_label = lv_label_create(lv_scr_act());
-    if (!s_ui_state.message_label) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    lv_label_set_text(s_ui_state.message_label, message);
-    lv_obj_set_style_text_color(s_ui_state.message_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_color(s_ui_state.message_label, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(s_ui_state.message_label, LV_OPA_80, 0);
-    lv_obj_set_style_pad_all(s_ui_state.message_label, 6, 0);
-    lv_obj_center(s_ui_state.message_label);
+    strncpy(s_pending_message, message, sizeof(s_pending_message) - 1);
+    s_pending_message[sizeof(s_pending_message) - 1] = '\0';
+    lv_async_call(show_message_async_callback, NULL);
     s_ui_state.current_screen = DC_UI_SCREEN_MESSAGE;
 
     if (duration_ms > 0) {
@@ -495,9 +517,6 @@ esp_err_t dc_ui_integration_deinit(void)
     if (s_ui_state.message_timer) {
         esp_timer_stop(s_ui_state.message_timer);
         esp_timer_delete(s_ui_state.message_timer);
-    }
-    if (s_ui_state.message_label && lv_obj_is_valid(s_ui_state.message_label)) {
-        lv_obj_del_async(s_ui_state.message_label);
     }
 
     memset(&s_ui_state, 0, sizeof(s_ui_state));

@@ -1,0 +1,26 @@
+menu "Smart Home Mesh Roles"
+
+choice SH_CONTROLLER_ROLE
+    prompt "Smart-home controller role"
+    default SH_ROLE_PROVISIONER_CONTROLLER
+    help
+        Select how the vendor_client firmware participates in the BLE Mesh network.
+
+config SH_ROLE_PROVISIONER_CONTROLLER
+    bool "Provisioner controller"
+
+config SH_ROLE_REMOTE_CONTROLLER
+    bool "Remote controller"
+
+config SH_ROLE_GATEWAY_RELAY
+    bool "Gateway relay"
+
+endchoice
+
+config SH_BLE_BRIDGE_ENABLE
+    bool "Enable phone BLE GATT bridge"
+    default y
+    help
+        Expose device list, state notifications, and control writes through a normal BLE GATT service.
+
+endmenu

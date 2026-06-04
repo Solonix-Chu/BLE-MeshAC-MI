@@ -8,7 +8,7 @@
 #include "gui_guider.h"
 #include "esp_log.h"
 #include "ac_control.h"
-#include "smarthome_client.h"
+#include "smarthome_controller.h"
 #include "smarthome_profiles.h"
 #include <string.h>
 #include <ctype.h>
@@ -238,7 +238,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
             return ESP_ERR_INVALID_ARG;
         }
 
-        ret = sh_client_set_profile(device_addr, profile);
+        ret = sh_controller_set_profile(device_addr, profile);
         if (ret == ESP_OK) {
             snprintf(msg, sizeof(msg), "Type: %s", profile->display_name);
             dc_ui_integration_show_message("TYPE SET OK", 1000);
@@ -266,7 +266,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
 
         param_name = (feature && feature->name) ? feature->name : "Feature";
         snprintf(msg, sizeof(msg), "All Devices %s: %ld", param_name, value);
-        ret = sh_client_group_set_feature(feature_id, value);
+        ret = sh_controller_group_set_feature(feature_id, value);
 
         if (ret == ESP_OK) {
             dc_ui_integration_show_message("GROUP SET OK", 1000);
@@ -340,7 +340,7 @@ static esp_err_t parameter_change_handler(uint8_t device_id, dc_parameter_t para
     if (feature_id) {
         param_name = (feature && feature->name) ? feature->name : "Feature";
         snprintf(msg, sizeof(msg), "%s: %ld", param_name, value);
-        ret = sh_client_set_feature(device_addr, feature_id, value);
+        ret = sh_controller_set_feature(device_addr, feature_id, value);
         if (ret == ESP_OK) {
             dc_ui_integration_show_message("SET OK", 500);
             ESP_LOGI(TAG, "Successfully sent feature 0x%04X to device 0x%04X: %s",
@@ -600,7 +600,7 @@ static void ac_device_provisioned_callback(uint16_t device_addr)
     if (!has_profile) {
         dc_ui_integration_show_message("New Device", 2000);
         ESP_LOGI(TAG, "New device 0x%04X profile not loaded yet, requesting profile", device_addr);
-        sh_client_get_profile(device_addr);
+        sh_controller_get_profile(device_addr);
     }
 }
 
@@ -632,7 +632,7 @@ static void sync_single_device_status(uint16_t device_addr)
         s_sync_device_info.profile && s_sync_device_info.profile->feature_count > 0) {
         for (uint8_t i = 0; i < s_sync_device_info.profile->feature_count; i++) {
             uint16_t feature_id = s_sync_device_info.profile->features[i].feature_id;
-            esp_err_t ret = sh_client_get_feature(device_addr, feature_id);
+            esp_err_t ret = sh_controller_get_feature(device_addr, feature_id);
             if (ret != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to request feature 0x%04X from 0x%04X: %s",
                          feature_id, device_addr, esp_err_to_name(ret));
@@ -643,7 +643,7 @@ static void sync_single_device_status(uint16_t device_addr)
     }
 
     ESP_LOGI(TAG, "Profile not loaded for 0x%04X, requesting profile first", device_addr);
-    sh_client_get_profile(device_addr);
+    sh_controller_get_profile(device_addr);
 }
 
 // Sync all online devices status

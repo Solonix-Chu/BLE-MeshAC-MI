@@ -143,6 +143,22 @@ static esp_err_t send_feature_status(esp_ble_mesh_msg_ctx_t *ctx, const sh_featu
                                               offset + tlv_len, payload);
 }
 
+static esp_err_t publish_feature_status_to_group(const esp_ble_mesh_msg_ctx_t *rx_ctx,
+                                                 const sh_feature_state_t *state,
+                                                 uint8_t tid)
+{
+    if (!rx_ctx || !state) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_ble_mesh_msg_ctx_t group_ctx = *rx_ctx;
+    group_ctx.addr = SH_GROUP_ADDR_DEFAULT;
+    group_ctx.recv_dst = 0;
+    ESP_LOGI(TAG, "Publish feature status to group 0x%04x: feature=0x%04x value=%" PRId32,
+             SH_GROUP_ADDR_DEFAULT, state->feature_id, state->value);
+    return send_feature_status(&group_ctx, state, tid);
+}
+
 static esp_err_t send_profile_status(esp_ble_mesh_msg_ctx_t *ctx, uint8_t tid)
 {
     if (!ctx || !s_profile || s_profile_blob_len == 0) {
@@ -249,8 +265,14 @@ static void handle_feature_set(esp_ble_mesh_msg_ctx_t *ctx, const uint8_t *msg, 
     sh_feature_state_t *state = NULL;
     esp_err_t err = apply_feature(tlv.feature_id, value, &state);
     bool is_group = ctx->recv_dst == SH_GROUP_ADDR_DEFAULT;
-    if (err == ESP_OK && state && !is_group) {
-        send_feature_status(ctx, state, header.tid);
+    if (err == ESP_OK && state) {
+        ESP_LOGI(TAG, "Feature set from 0x%04x dst=0x%04x%s: feature=0x%04x value=%" PRId32,
+                 ctx->addr, ctx->recv_dst, is_group ? " (group)" : "",
+                 state->feature_id, state->value);
+        if (!is_group) {
+            send_feature_status(ctx, state, header.tid);
+        }
+        publish_feature_status_to_group(ctx, state, header.tid);
     } else if (err != ESP_OK) {
         ESP_LOGW(TAG, "Feature set failed id=0x%04x value=%" PRId32 ": %s",
                  tlv.feature_id, value, esp_err_to_name(err));
@@ -334,6 +356,7 @@ static void model_cb(esp_ble_mesh_model_cb_event_t event,
         uint32_t opcode = param->model_operation.opcode;
         esp_ble_mesh_msg_ctx_t *ctx = param->model_operation.ctx;
         s_client_addr = ctx->addr;
+        s_connected = true;
 
         switch (opcode) {
         case SH_OP_PROFILE_GET: {
