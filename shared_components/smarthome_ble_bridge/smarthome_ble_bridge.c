@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include "esp_bt_defs.h"
+#include "esp_ble_mesh_ble_api.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
 #include "esp_log.h"
@@ -41,6 +42,8 @@ static bool s_initialized;
 static bool s_notify_enabled = true;
 static bool s_adv_configured;
 static bool s_adv_started;
+static uint8_t s_bridge_adv_data[31];
+static uint8_t s_bridge_adv_data_len;
 static char s_device_name[SH_BLE_BRIDGE_DEVICE_NAME_MAX] = "MeshAC Bridge";
 static esp_attr_control_t s_rsp_by_app = {
     .auto_rsp = ESP_GATT_RSP_BY_APP,
@@ -227,51 +230,57 @@ static void start_advertising(void)
         return;
     }
 
-    esp_ble_adv_params_t adv_params = {
-        .adv_int_min = 0x40,
-        .adv_int_max = 0x80,
+    esp_ble_mesh_ble_adv_param_t adv_params = {
+        .interval = 0x40,
         .adv_type = ADV_TYPE_IND,
         .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-        .channel_map = ADV_CHNL_ALL,
-        .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+        .duration = 120,
+        .period = 500,
+        .count = ESP_BLE_MESH_BLE_ADV_INFINITE,
+        .priority = ESP_BLE_MESH_BLE_ADV_PRIO_HIGH,
     };
 
-    esp_err_t err = esp_ble_gap_start_advertising(&adv_params);
+    esp_ble_mesh_ble_adv_data_t adv_data = {
+        .adv_data_len = s_bridge_adv_data_len,
+    };
+    memcpy(adv_data.adv_data, s_bridge_adv_data, s_bridge_adv_data_len);
+
+    esp_err_t err = esp_ble_mesh_start_ble_advertising(&adv_params, &adv_data);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BLE bridge advertising start request failed: %s",
+        ESP_LOGW(TAG, "BLE bridge mesh advertising start request failed: %s",
                  esp_err_to_name(err));
+        return;
     }
+    s_adv_started = true;
+    ESP_LOGI(TAG, "BLE bridge mesh advertising queued as \"%s\"", s_device_name);
 }
 
 static void configure_advertising(void)
 {
-    static uint8_t raw_adv_data[31];
     uint8_t offset = 0;
     size_t name_len = strlen(s_device_name);
     if (name_len > 20) {
         name_len = 20;
     }
 
-    raw_adv_data[offset++] = 0x02;
-    raw_adv_data[offset++] = ESP_BLE_AD_TYPE_FLAG;
-    raw_adv_data[offset++] = ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
+    s_bridge_adv_data[offset++] = 0x02;
+    s_bridge_adv_data[offset++] = ESP_BLE_AD_TYPE_FLAG;
+    s_bridge_adv_data[offset++] = ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
 
-    raw_adv_data[offset++] = 0x03;
-    raw_adv_data[offset++] = ESP_BLE_AD_TYPE_16SRV_CMPL;
-    raw_adv_data[offset++] = (uint8_t)(SH_BRIDGE_SERVICE_UUID & 0xFF);
-    raw_adv_data[offset++] = (uint8_t)(SH_BRIDGE_SERVICE_UUID >> 8);
+    s_bridge_adv_data[offset++] = 0x03;
+    s_bridge_adv_data[offset++] = ESP_BLE_AD_TYPE_16SRV_CMPL;
+    s_bridge_adv_data[offset++] = (uint8_t)(SH_BRIDGE_SERVICE_UUID & 0xFF);
+    s_bridge_adv_data[offset++] = (uint8_t)(SH_BRIDGE_SERVICE_UUID >> 8);
 
-    raw_adv_data[offset++] = (uint8_t)(name_len + 1);
-    raw_adv_data[offset++] = ESP_BLE_AD_TYPE_NAME_CMPL;
-    memcpy(raw_adv_data + offset, s_device_name, name_len);
+    s_bridge_adv_data[offset++] = (uint8_t)(name_len + 1);
+    s_bridge_adv_data[offset++] = ESP_BLE_AD_TYPE_NAME_CMPL;
+    memcpy(s_bridge_adv_data + offset, s_device_name, name_len);
     offset += name_len;
 
-    s_adv_configured = false;
-    esp_err_t err = esp_ble_gap_config_adv_data_raw(raw_adv_data, offset);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BLE bridge raw adv data config request failed: %s",
-                 esp_err_to_name(err));
-    }
+    s_bridge_adv_data_len = offset;
+    s_adv_configured = true;
+    ESP_LOGI(TAG, "BLE bridge raw adv data configured");
+    start_advertising();
 }
 
 static void gatts_cb(esp_gatts_cb_event_t event,
@@ -339,11 +348,13 @@ static void gatts_cb(esp_gatts_cb_event_t event,
         break;
     case ESP_GATTS_CONNECT_EVT:
         s_connected = true;
+        s_adv_started = false;
         s_conn_id = param->connect.conn_id;
         s_gatts_if = gatts_if;
         break;
     case ESP_GATTS_DISCONNECT_EVT:
         s_connected = false;
+        s_adv_started = false;
         start_advertising();
         break;
     case ESP_GATTS_READ_EVT: {

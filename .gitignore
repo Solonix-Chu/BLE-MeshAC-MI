@@ -7,6 +7,7 @@
 */.vscode/
 vendor_server/.vscode/
 vendor_client/.vscode/
+vendor_remote/.vscode/
 *.sublime-project
 *.sublime-workspace
 *.code-workspace
@@ -14,6 +15,7 @@ vendor_client/.vscode/
 */.devcontainer/
 vendor_server/.devcontainer/
 vendor_client/.devcontainer/
+vendor_remote/.devcontainer/
 
 # 构建和输出相关
 /build/
@@ -37,6 +39,7 @@ sdkconfig.old
 /components/lwip/
 vendor_client/components/lvgl/
 vendor_server/components/lvgl/
+vendor_remote/components/lvgl/
 
 # 日志和临时文件
 *.log
@@ -81,6 +84,7 @@ temp/
 # 子项目可能产生的缓存/临时目录
 vendor_server/esp-idf
 vendor_client/esp-idf
+vendor_remote/esp-idf
 */sdkconfig.ci.*
 
 # 可能在运行时生成的特定文件

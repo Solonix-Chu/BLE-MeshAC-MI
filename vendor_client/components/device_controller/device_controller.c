@@ -54,7 +54,7 @@ static const char *get_builtin_profile_name(int32_t index);
 // Button event handler
 static void button_event_handler(dc_event_t event, void *user_data)
 {
-    // ESP_LOGD(TAG, "Button event: %d", event);
+    ESP_LOGI(TAG, "Button event: %d", event);
 
     esp_err_t ret = dc_state_machine_process_event(event);
     if (ret != ESP_OK) {
@@ -593,11 +593,12 @@ static void ac_device_provisioned_callback(uint16_t device_addr)
 
     bool has_profile = ac_get_device_info_by_addr(device_addr, &s_sync_device_info) == ESP_OK &&
         s_sync_device_info.profile && s_sync_device_info.profile->feature_count > 0;
+    bool is_remote_role = sh_controller_get_role() != SH_CONTROLLER_ROLE_PROVISIONER_CONTROLLER;
 
     // Refresh device list and reinitialize
     sync_device_info_from_ac_control();
 
-    if (!has_profile) {
+    if (!has_profile && !is_remote_role) {
         dc_ui_integration_show_message("New Device", 2000);
         ESP_LOGI(TAG, "New device 0x%04X profile not loaded yet, requesting profile", device_addr);
         sh_controller_get_profile(device_addr);
@@ -627,6 +628,7 @@ static void sync_device_info_from_ac_control(void)
 static void sync_single_device_status(uint16_t device_addr)
 {
     ESP_LOGI(TAG, "Syncing status for device 0x%04X", device_addr);
+    bool is_remote_role = sh_controller_get_role() != SH_CONTROLLER_ROLE_PROVISIONER_CONTROLLER;
 
     if (ac_get_device_info_by_addr(device_addr, &s_sync_device_info) == ESP_OK &&
         s_sync_device_info.profile && s_sync_device_info.profile->feature_count > 0) {
@@ -639,6 +641,11 @@ static void sync_single_device_status(uint16_t device_addr)
             }
         }
         ESP_LOGI(TAG, "Profile-driven status sync requests sent for device 0x%04X", device_addr);
+        return;
+    }
+
+    if (is_remote_role) {
+        ESP_LOGI(TAG, "Profile not loaded for 0x%04X, waiting for remote directory sync", device_addr);
         return;
     }
 

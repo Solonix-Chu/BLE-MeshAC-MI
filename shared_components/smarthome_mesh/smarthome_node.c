@@ -113,6 +113,13 @@ static void notify_profile_changed(void)
     }
 }
 
+static void notify_provisioned(bool is_provisioned, uint16_t addr)
+{
+    if (s_callbacks.provisioned_cb) {
+        s_callbacks.provisioned_cb(is_provisioned, addr, s_callbacks.user_data);
+    }
+}
+
 static esp_err_t send_feature_status(esp_ble_mesh_msg_ctx_t *ctx, const sh_feature_state_t *state, uint8_t tid)
 {
     if (!ctx || !state) {
@@ -205,6 +212,23 @@ static esp_err_t send_profile_status(esp_ble_mesh_msg_ctx_t *ctx, uint8_t tid)
     }
 
     return ESP_OK;
+}
+
+static esp_err_t publish_profile_status_to_group(const esp_ble_mesh_msg_ctx_t *rx_ctx,
+                                                 uint8_t tid)
+{
+    if (!rx_ctx) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_ble_mesh_msg_ctx_t group_ctx = *rx_ctx;
+    group_ctx.addr = SH_GROUP_ADDR_DEFAULT;
+    group_ctx.recv_dst = 0;
+    ESP_LOGI(TAG, "Publish profile status to group 0x%04x: profile=0x%04x (%s)",
+             SH_GROUP_ADDR_DEFAULT,
+             s_profile ? s_profile->profile_id : 0,
+             (s_profile && s_profile->display_name) ? s_profile->display_name : "Profile");
+    return send_profile_status(&group_ctx, tid);
 }
 
 static esp_err_t apply_feature(uint16_t feature_id, int32_t value, sh_feature_state_t **out_state)
@@ -346,6 +370,7 @@ static void handle_profile_set(esp_ble_mesh_msg_ctx_t *ctx, const uint8_t *data,
     ESP_LOGI(TAG, "Applied profile set 0x%04x (%s)",
              s_profile->profile_id, s_profile->display_name);
     send_profile_status(ctx, header.tid);
+    publish_profile_status_to_group(ctx, header.tid);
 }
 
 static void model_cb(esp_ble_mesh_model_cb_event_t event,
@@ -413,6 +438,7 @@ static void prov_complete(uint16_t net_idx, uint16_t addr, uint8_t flags, uint32
     (void)iv_index;
     s_device_addr = addr;
     ESP_LOGI(TAG, "Provisioning complete addr=0x%04x", addr);
+    notify_provisioned(true, addr);
 }
 
 static void provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
@@ -429,6 +455,7 @@ static void provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
         s_device_addr = 0;
         s_client_addr = 0;
         s_connected = false;
+        notify_provisioned(false, 0);
         if (s_callbacks.connection_cb) {
             s_callbacks.connection_cb(false, 0, s_callbacks.user_data);
         }
@@ -522,10 +549,17 @@ esp_err_t sh_node_init(const sh_device_profile_t *profile, const sh_node_callbac
         return err;
     }
 
-    err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)
-                                        (ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
-    if (err != ESP_OK) {
-        return err;
+    if (esp_ble_mesh_node_is_provisioned()) {
+        s_device_addr = esp_ble_mesh_get_primary_element_address();
+        ESP_LOGI(TAG, "Smart-home node restored provisioned state addr=0x%04x",
+                 s_device_addr);
+        notify_provisioned(true, s_device_addr);
+    } else {
+        err = esp_ble_mesh_node_prov_enable((esp_ble_mesh_prov_bearer_t)
+                                            (ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT));
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     ESP_LOGI(TAG, "Generic smart-home node initialized with profile 0x%04x (%s)",

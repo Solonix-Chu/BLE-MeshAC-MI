@@ -23,11 +23,12 @@
 #define SH_PROV_OWN_ADDR       0x0001
 #define SH_PROV_START_ADDR     0x0005
 #define SH_MSG_SEND_TTL        7
-#define SH_MSG_TIMEOUT_MS      1000
+#define SH_MSG_TIMEOUT_MS      4000
 #define SH_APP_KEY_IDX         0x0000
 #define SH_APP_KEY_OCTET       0x12
 #define SH_MAX_TIMEOUTS        3
 #define SH_PROFILE_BLOB_MAX    512
+#define SH_PROFILE_REQUEST_RETRY_MS 3000
 
 #ifndef ESP_RETURN_ON_ERROR
 #define ESP_RETURN_ON_ERROR(x, tag, fmt, ...) do { \
@@ -50,7 +51,21 @@ typedef struct {
     uint16_t profile_crc;
     uint8_t profile_chunks_seen;
     uint8_t profile_chunk_count;
+    uint32_t next_profile_request_ms;
+    bool profile_request_pending;
 } sh_client_device_slot_t;
+
+typedef enum {
+    SH_REMOTE_NODE_KIND_UNKNOWN = 0,
+    SH_REMOTE_NODE_KIND_DEVICE,
+    SH_REMOTE_NODE_KIND_CONTROLLER,
+} sh_remote_node_kind_t;
+
+typedef struct {
+    bool valid;
+    uint16_t old_unicast_addr;
+    esp_ble_mesh_unprov_dev_add_t dev;
+} sh_pending_reprov_t;
 
 static struct {
     uint16_t net_idx;
@@ -68,6 +83,15 @@ static sh_client_callbacks_t s_callbacks;
 static bool s_initialized;
 static bool s_key_refresh_in_progress;
 static uint8_t s_profile_set_blob[SH_PROFILE_BLOB_MAX];
+static sh_remote_node_kind_t s_configuring_kind;
+static uint16_t s_remote_controllers[SH_CLIENT_MAX_DEVICES];
+static uint8_t s_remote_controller_count;
+static sh_pending_reprov_t s_pending_reprov;
+
+static esp_err_t send_vendor(uint16_t addr, uint32_t opcode,
+                             const uint8_t *data, uint16_t len, bool need_rsp);
+static void mark_device_configured(uint16_t addr);
+static void ensure_local_controller_ready(void);
 
 static esp_ble_mesh_cfg_srv_t s_config_server = {
     .net_transmit = ESP_BLE_MESH_TRANSMIT(2, 20),
@@ -90,6 +114,8 @@ static esp_ble_mesh_model_op_t s_client_ops[] = {
     ESP_BLE_MESH_MODEL_OP(SH_OP_FEATURE_STATUS, 0),
     ESP_BLE_MESH_MODEL_OP(SH_OP_NODE_EVENT, 0),
     ESP_BLE_MESH_MODEL_OP(SH_OP_DISCONNECT_ACK, 0),
+    ESP_BLE_MESH_MODEL_OP(SH_OP_DEVICE_DIRECTORY, 0),
+    ESP_BLE_MESH_MODEL_OP(SH_OP_DEVICE_DIRECTORY_GET, 0),
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
@@ -172,6 +198,219 @@ static sh_client_device_slot_t *add_device(uint16_t addr, const uint8_t *uuid)
     return slot;
 }
 
+static void remove_device_slot(uint16_t addr)
+{
+    int idx = find_device_index(addr);
+    if (idx < 0) {
+        return;
+    }
+
+    for (uint8_t i = idx; i + 1 < s_device_count; i++) {
+        s_devices[i] = s_devices[i + 1];
+    }
+    s_device_count--;
+}
+
+static void forget_remote_controller(uint16_t addr)
+{
+    for (uint8_t i = 0; i < s_remote_controller_count; i++) {
+        if (s_remote_controllers[i] != addr) {
+            continue;
+        }
+        for (uint8_t j = i; j + 1 < s_remote_controller_count; j++) {
+            s_remote_controllers[j] = s_remote_controllers[j + 1];
+        }
+        s_remote_controller_count--;
+        return;
+    }
+}
+
+static uint16_t read_le16(const uint8_t *data)
+{
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+}
+
+static sh_remote_node_kind_t parse_composition_kind(const uint8_t *data, uint16_t len)
+{
+    if (!data || len < 10) {
+        return SH_REMOTE_NODE_KIND_UNKNOWN;
+    }
+
+    uint16_t offset = 10;
+    bool has_node_model = false;
+    bool has_client_model = false;
+
+    while (offset + 4 <= len) {
+        offset += 2; /* location */
+        uint8_t sig_count = data[offset++];
+        uint8_t vendor_count = data[offset++];
+        uint16_t sig_bytes = (uint16_t)sig_count * 2;
+        if (offset + sig_bytes > len) {
+            break;
+        }
+        offset += sig_bytes;
+
+        for (uint8_t i = 0; i < vendor_count && offset + 4 <= len; i++) {
+            uint16_t cid = read_le16(data + offset);
+            uint16_t model_id = read_le16(data + offset + 2);
+            offset += 4;
+            if (cid == SH_COMPANY_ID && model_id == SH_MODEL_ID_NODE) {
+                has_node_model = true;
+            } else if (cid == SH_COMPANY_ID && model_id == SH_MODEL_ID_CLIENT) {
+                has_client_model = true;
+            }
+        }
+    }
+
+    if (has_client_model && !has_node_model) {
+        return SH_REMOTE_NODE_KIND_CONTROLLER;
+    }
+    if (has_node_model) {
+        return SH_REMOTE_NODE_KIND_DEVICE;
+    }
+    return SH_REMOTE_NODE_KIND_UNKNOWN;
+}
+
+static esp_err_t send_device_directory(uint16_t addr)
+{
+    uint8_t payload[2 + 1 + SH_CLIENT_MAX_DEVICES * 2];
+    size_t offset = 0;
+    ESP_RETURN_ON_ERROR(sh_protocol_write_header(payload, sizeof(payload),
+                                                 sh_protocol_next_tid(), &offset),
+                        TAG, "directory header");
+
+    uint8_t count_offset = offset++;
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < s_device_count && offset + 2 <= sizeof(payload); i++) {
+        if (!s_devices[i].public_info.is_configured ||
+            s_devices[i].public_info.is_blacklisted) {
+            continue;
+        }
+        uint16_t device_addr = s_devices[i].public_info.addr;
+        payload[offset++] = (uint8_t)(device_addr & 0xFF);
+        payload[offset++] = (uint8_t)(device_addr >> 8);
+        count++;
+    }
+    payload[count_offset] = count;
+
+    esp_err_t err = send_vendor(addr, SH_OP_DEVICE_DIRECTORY, payload, offset, false);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Sent device directory count=%u to controller 0x%04x", count, addr);
+    } else {
+        ESP_LOGW(TAG, "Failed to send device directory to 0x%04x: %s",
+                 addr, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static void remember_remote_controller(uint16_t addr)
+{
+    for (uint8_t i = 0; i < s_remote_controller_count; i++) {
+        if (s_remote_controllers[i] == addr) {
+            return;
+        }
+    }
+    if (s_remote_controller_count >= SH_CLIENT_MAX_DEVICES) {
+        ESP_LOGW(TAG, "Remote controller table full, cannot add 0x%04x", addr);
+        return;
+    }
+    s_remote_controllers[s_remote_controller_count++] = addr;
+}
+
+static void broadcast_device_directory_to_remotes(void)
+{
+    for (uint8_t i = 0; i < s_remote_controller_count; i++) {
+        send_device_directory(s_remote_controllers[i]);
+    }
+}
+
+static const esp_ble_mesh_node_t *find_existing_node_for_unprov(
+    const esp_ble_mesh_unprov_dev_add_t *dev)
+{
+    if (!dev) {
+        return NULL;
+    }
+
+    const esp_ble_mesh_node_t **entry = esp_ble_mesh_provisioner_get_node_table_entry();
+    if (!entry) {
+        return NULL;
+    }
+
+    for (int i = 0; i < CONFIG_BLE_MESH_MAX_PROV_NODES; i++) {
+        const esp_ble_mesh_node_t *node = entry[i];
+        if (!node) {
+            continue;
+        }
+        if (memcmp(node->dev_uuid, dev->uuid, ESP_BLE_MESH_OCTET16_LEN) == 0) {
+            return node;
+        }
+        if (node->addr_type == dev->addr_type &&
+            memcmp(node->addr, dev->addr, BD_ADDR_LEN) == 0) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static void clear_local_node_records(uint16_t addr)
+{
+    remove_device_slot(addr);
+    forget_remote_controller(addr);
+}
+
+static void restore_provisioned_nodes_from_mesh_table(void)
+{
+    const esp_ble_mesh_node_t **entry = esp_ble_mesh_provisioner_get_node_table_entry();
+    if (!entry) {
+        return;
+    }
+
+    uint8_t restored_devices = 0;
+    uint8_t restored_controllers = 0;
+    for (int i = 0; i < CONFIG_BLE_MESH_MAX_PROV_NODES; i++) {
+        const esp_ble_mesh_node_t *node = entry[i];
+        if (!node || !ESP_BLE_MESH_ADDR_IS_UNICAST(node->unicast_addr)) {
+            continue;
+        }
+
+        sh_remote_node_kind_t kind = parse_composition_kind(node->comp_data,
+                                                            node->comp_length);
+        if (kind == SH_REMOTE_NODE_KIND_CONTROLLER) {
+            remember_remote_controller(node->unicast_addr);
+            restored_controllers++;
+        } else if (kind == SH_REMOTE_NODE_KIND_DEVICE) {
+            if (add_device(node->unicast_addr, node->dev_uuid)) {
+                mark_device_configured(node->unicast_addr);
+                restored_devices++;
+            }
+        }
+    }
+
+    if (restored_devices || restored_controllers) {
+        ESP_LOGI(TAG, "Restored mesh table: devices=%u controllers=%u",
+                 restored_devices, restored_controllers);
+    }
+}
+
+static void ensure_local_controller_ready(void)
+{
+    esp_err_t err = esp_ble_mesh_provisioner_bind_app_key_to_local_model(
+        SH_PROV_OWN_ADDR, s_key.app_idx, SH_MODEL_ID_CLIENT, SH_COMPANY_ID);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Local model bind skipped/failed: %s", esp_err_to_name(err));
+    }
+
+    err = esp_ble_mesh_model_subscribe_group_addr(SH_PROV_OWN_ADDR, SH_COMPANY_ID,
+                                                  SH_MODEL_ID_CLIENT,
+                                                  SH_GROUP_ADDR_DEFAULT);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Local controller group subscribe skipped/failed: %s",
+                 esp_err_to_name(err));
+    }
+
+    restore_provisioned_nodes_from_mesh_table();
+}
+
 static void set_common(esp_ble_mesh_client_common_param_t *common,
                        uint16_t addr,
                        esp_ble_mesh_model_t *model,
@@ -220,6 +459,22 @@ static esp_err_t send_vendor(uint16_t addr, uint32_t opcode,
 
 static esp_err_t request_profile_for_device(uint16_t addr)
 {
+    sh_client_device_slot_t *slot = find_device(addr);
+    if (slot) {
+        uint32_t now = now_ms();
+        if (slot->public_info.profile_loaded) {
+            return ESP_OK;
+        }
+        if (slot->profile_request_pending) {
+            ESP_LOGI(TAG, "Profile request already pending for 0x%04x", addr);
+            return ESP_OK;
+        }
+        if (slot->next_profile_request_ms != 0 && now < slot->next_profile_request_ms) {
+            ESP_LOGI(TAG, "Profile request for 0x%04x delayed", addr);
+            return ESP_OK;
+        }
+    }
+
     uint8_t payload[2];
     size_t written = 0;
     ESP_RETURN_ON_ERROR(sh_protocol_write_header(payload, sizeof(payload),
@@ -227,8 +482,16 @@ static esp_err_t request_profile_for_device(uint16_t addr)
                         TAG, "write profile get header");
     esp_err_t err = send_vendor(addr, SH_OP_PROFILE_GET, payload, written, true);
     if (err == ESP_OK) {
+        if (slot) {
+            slot->profile_request_pending = true;
+            slot->next_profile_request_ms = now_ms() + SH_MSG_TIMEOUT_MS + SH_PROFILE_REQUEST_RETRY_MS;
+        }
         ESP_LOGI(TAG, "Requested profile from 0x%04x", addr);
     } else {
+        if (slot) {
+            slot->profile_request_pending = false;
+            slot->next_profile_request_ms = now_ms() + SH_PROFILE_REQUEST_RETRY_MS;
+        }
         ESP_LOGW(TAG, "Failed to request profile from 0x%04x: %s",
                  addr, esp_err_to_name(err));
     }
@@ -264,6 +527,8 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
         return;
     }
     slot->consecutive_timeouts = 0;
+    slot->profile_request_pending = false;
+    slot->next_profile_request_ms = 0;
     slot->public_info.is_online = true;
     slot->public_info.last_update_time = now_ms();
 
@@ -303,6 +568,8 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
     if (slot->profile_blob_len != slot->profile_expected_len ||
         sh_protocol_crc16(slot->profile_blob, slot->profile_blob_len) != slot->profile_crc) {
         ESP_LOGW(TAG, "Profile CRC/length mismatch for 0x%04x, retrying", addr);
+        slot->profile_request_pending = false;
+        slot->next_profile_request_ms = now_ms() + SH_PROFILE_REQUEST_RETRY_MS;
         request_profile_for_device(addr);
         return;
     }
@@ -312,11 +579,14 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
                                                  &slot->profile_storage, &profile);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to parse profile from 0x%04x: %s", addr, esp_err_to_name(err));
+        slot->next_profile_request_ms = now_ms() + SH_PROFILE_REQUEST_RETRY_MS;
         return;
     }
 
     slot->public_info.profile = profile;
     slot->public_info.profile_loaded = true;
+    slot->profile_request_pending = false;
+    slot->next_profile_request_ms = 0;
     sh_store_save_profile_blob(profile->profile_id, slot->profile_blob, slot->profile_blob_len);
     sh_model_default_states(profile, slot->public_info.states,
                             SH_MODEL_MAX_FEATURES, &slot->public_info.state_count);
@@ -332,6 +602,7 @@ static void handle_profile_status(uint16_t addr, const uint8_t *data, uint16_t l
     }
     sh_client_refresh_device(addr);
     sh_client_add_device_to_group(addr);
+    broadcast_device_directory_to_remotes();
 }
 
 static void handle_feature_status(uint16_t addr, const uint8_t *data, uint16_t len)
@@ -380,10 +651,16 @@ static void handle_feature_status(uint16_t addr, const uint8_t *data, uint16_t l
 
 static void handle_operation(uint32_t opcode, const uint8_t *data, uint16_t len, uint16_t addr)
 {
-    sh_client_device_slot_t *slot = add_device(addr, NULL);
-    if (slot) {
-        slot->public_info.is_online = true;
-        slot->public_info.last_update_time = now_ms();
+    sh_client_device_slot_t *slot = NULL;
+    if (opcode == SH_OP_PROFILE_STATUS ||
+        opcode == SH_OP_FEATURE_STATUS ||
+        opcode == SH_OP_NODE_EVENT ||
+        opcode == SH_OP_DISCONNECT_ACK) {
+        slot = add_device(addr, NULL);
+        if (slot) {
+            slot->public_info.is_online = true;
+            slot->public_info.last_update_time = now_ms();
+        }
     }
 
     switch (opcode) {
@@ -404,6 +681,11 @@ static void handle_operation(uint32_t opcode, const uint8_t *data, uint16_t len,
         if (s_callbacks.online_cb) {
             s_callbacks.online_cb(addr, false);
         }
+        break;
+    case SH_OP_DEVICE_DIRECTORY_GET:
+        ESP_LOGI(TAG, "Device directory requested by controller 0x%04x", addr);
+        remember_remote_controller(addr);
+        send_device_directory(addr);
         break;
     default:
         ESP_LOGW(TAG, "Unknown opcode 0x%06" PRIx32 " from 0x%04x", opcode, addr);
@@ -438,10 +720,9 @@ static void vendor_model_cb(esp_ble_mesh_model_cb_event_t event,
         sh_client_device_slot_t *slot = find_device(addr);
         if (slot) {
             slot->consecutive_timeouts++;
-            if (param->client_send_timeout.opcode == SH_OP_PROFILE_GET &&
-                !slot->public_info.profile_loaded &&
-                slot->consecutive_timeouts < SH_MAX_TIMEOUTS) {
-                request_profile_for_device(addr);
+            if (param->client_send_timeout.opcode == SH_OP_PROFILE_GET) {
+                slot->profile_request_pending = false;
+                slot->next_profile_request_ms = now_ms() + SH_PROFILE_REQUEST_RETRY_MS;
             }
             if (slot->consecutive_timeouts >= SH_MAX_TIMEOUTS) {
                 slot->public_info.is_online = false;
@@ -472,6 +753,35 @@ static void recv_unprov_adv(uint8_t uuid[ESP_BLE_MESH_OCTET16_LEN],
     add_dev.oob_info = oob_info;
     add_dev.bearer = bearer;
 
+    if (s_pending_reprov.valid) {
+        if (memcmp(s_pending_reprov.dev.uuid, add_dev.uuid, ESP_BLE_MESH_OCTET16_LEN) == 0 ||
+            (s_pending_reprov.dev.addr_type == add_dev.addr_type &&
+             memcmp(s_pending_reprov.dev.addr, add_dev.addr, BD_ADDR_LEN) == 0)) {
+            ESP_LOGI(TAG, "Stale node delete already pending for this unprovisioned device");
+            return;
+        }
+        ESP_LOGW(TAG, "Reprovision cleanup already pending, ignoring another unprovisioned device");
+        return;
+    }
+
+    const esp_ble_mesh_node_t *old_node = find_existing_node_for_unprov(&add_dev);
+    if (old_node) {
+        s_pending_reprov.valid = true;
+        s_pending_reprov.old_unicast_addr = old_node->unicast_addr;
+        s_pending_reprov.dev = add_dev;
+
+        esp_err_t del_err = esp_ble_mesh_provisioner_delete_node_with_addr(old_node->unicast_addr);
+        if (del_err == ESP_OK) {
+            ESP_LOGW(TAG, "Existing node for unprovisioned UUID/addr found at 0x%04x, deleting before reprovision",
+                     old_node->unicast_addr);
+            return;
+        }
+
+        s_pending_reprov.valid = false;
+        ESP_LOGW(TAG, "Failed to delete stale node 0x%04x before reprovision: %s",
+                 old_node->unicast_addr, esp_err_to_name(del_err));
+    }
+
     esp_err_t err = esp_ble_mesh_provisioner_add_unprov_dev(&add_dev,
         ADD_DEV_RM_AFTER_PROV_FLAG | ADD_DEV_START_PROV_NOW_FLAG | ADD_DEV_FLUSHABLE_DEV_FLAG);
     if (err != ESP_OK) {
@@ -487,7 +797,6 @@ static esp_err_t provisioned(uint16_t node_index,
 {
     ESP_LOGI(TAG, "Provisioned node idx=%u addr=0x%04x elems=%u net=0x%03x",
              node_index, primary_addr, element_num, net_idx);
-    add_device(primary_addr, uuid);
 
     char name[12];
     snprintf(name, sizeof(name), "NODE-%02u", node_index);
@@ -526,19 +835,39 @@ static void provisioning_cb(esp_ble_mesh_prov_cb_event_t event,
     case ESP_BLE_MESH_PROVISIONER_ADD_LOCAL_APP_KEY_COMP_EVT:
         if (param->provisioner_add_app_key_comp.err_code == ESP_OK) {
             s_key.app_idx = param->provisioner_add_app_key_comp.app_idx;
-            esp_err_t err = esp_ble_mesh_provisioner_bind_app_key_to_local_model(
-                SH_PROV_OWN_ADDR, s_key.app_idx, SH_MODEL_ID_CLIENT, SH_COMPANY_ID);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Local model bind failed: %s", esp_err_to_name(err));
-                break;
-            }
-            err = esp_ble_mesh_model_subscribe_group_addr(SH_PROV_OWN_ADDR, SH_COMPANY_ID,
-                                                          SH_MODEL_ID_CLIENT,
-                                                          SH_GROUP_ADDR_DEFAULT);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Local controller group subscribe failed: %s", esp_err_to_name(err));
-            }
+        } else {
+            ESP_LOGW(TAG, "Add local app key failed err=%d, trying restore path",
+                     param->provisioner_add_app_key_comp.err_code);
         }
+        ensure_local_controller_ready();
+        break;
+    case ESP_BLE_MESH_PROVISIONER_DELETE_NODE_WITH_ADDR_COMP_EVT:
+        if (!s_pending_reprov.valid ||
+            s_pending_reprov.old_unicast_addr !=
+                param->provisioner_delete_node_with_addr_comp.unicast_addr) {
+            break;
+        }
+
+        if (param->provisioner_delete_node_with_addr_comp.err_code == ESP_OK) {
+            clear_local_node_records(s_pending_reprov.old_unicast_addr);
+            esp_err_t add_err = esp_ble_mesh_provisioner_add_unprov_dev(
+                &s_pending_reprov.dev,
+                ADD_DEV_RM_AFTER_PROV_FLAG |
+                ADD_DEV_START_PROV_NOW_FLAG |
+                ADD_DEV_FLUSHABLE_DEV_FLAG);
+            if (add_err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to reprovision stale device after delete: %s",
+                         esp_err_to_name(add_err));
+            } else {
+                ESP_LOGI(TAG, "Stale node 0x%04x removed, reprovision started",
+                         s_pending_reprov.old_unicast_addr);
+            }
+        } else {
+            ESP_LOGW(TAG, "Delete stale node 0x%04x failed err=%d",
+                     s_pending_reprov.old_unicast_addr,
+                     param->provisioner_delete_node_with_addr_comp.err_code);
+        }
+        s_pending_reprov.valid = false;
         break;
     default:
         break;
@@ -566,6 +895,11 @@ static void config_client_cb(esp_ble_mesh_cfg_client_cb_event_t event,
     switch (event) {
     case ESP_BLE_MESH_CFG_CLIENT_GET_STATE_EVT:
         if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_COMPOSITION_DATA_GET) {
+            s_configuring_kind = parse_composition_kind(
+                param->status_cb.comp_data_status.composition_data->data,
+                param->status_cb.comp_data_status.composition_data->len);
+            ESP_LOGI(TAG, "Node 0x%04x composition kind=%d",
+                     node->unicast_addr, s_configuring_kind);
             err = esp_ble_mesh_provisioner_store_node_comp_data(
                 param->params->ctx.addr,
                 param->status_cb.comp_data_status.composition_data->data,
@@ -585,11 +919,28 @@ static void config_client_cb(esp_ble_mesh_cfg_client_cb_event_t event,
             set_config_common(&common, node, ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND);
             set.model_app_bind.element_addr = node->unicast_addr;
             set.model_app_bind.model_app_idx = s_key.app_idx;
-            set.model_app_bind.model_id = SH_MODEL_ID_NODE;
+            set.model_app_bind.model_id =
+                (s_configuring_kind == SH_REMOTE_NODE_KIND_CONTROLLER) ?
+                SH_MODEL_ID_CLIENT : SH_MODEL_ID_NODE;
             set.model_app_bind.company_id = SH_COMPANY_ID;
             esp_ble_mesh_config_client_set_state(&common, &set);
         } else if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND) {
-            mark_device_configured(node->unicast_addr);
+            if (s_configuring_kind == SH_REMOTE_NODE_KIND_CONTROLLER) {
+                set_config_common(&common, node, ESP_BLE_MESH_MODEL_OP_MODEL_SUB_ADD);
+                set.model_sub_add.element_addr = node->unicast_addr;
+                set.model_sub_add.sub_addr = SH_GROUP_ADDR_DEFAULT;
+                set.model_sub_add.model_id = SH_MODEL_ID_CLIENT;
+                set.model_sub_add.company_id = SH_COMPANY_ID;
+                esp_ble_mesh_config_client_set_state(&common, &set);
+            } else {
+                add_device(node->unicast_addr, NULL);
+                mark_device_configured(node->unicast_addr);
+            }
+        } else if (param->params->opcode == ESP_BLE_MESH_MODEL_OP_MODEL_SUB_ADD) {
+            ESP_LOGI(TAG, "Remote controller 0x%04x subscribed to status group 0x%04x",
+                     node->unicast_addr, SH_GROUP_ADDR_DEFAULT);
+            remember_remote_controller(node->unicast_addr);
+            send_device_directory(node->unicast_addr);
         }
         break;
     default:
@@ -642,7 +993,8 @@ esp_err_t sh_client_init(void)
 
     err = esp_ble_mesh_provisioner_add_local_app_key(s_key.app_key, s_key.net_idx, s_key.app_idx);
     if (err != ESP_OK) {
-        return err;
+        ESP_LOGW(TAG, "Add local app key request failed: %s", esp_err_to_name(err));
+        ensure_local_controller_ready();
     }
 
     s_initialized = true;

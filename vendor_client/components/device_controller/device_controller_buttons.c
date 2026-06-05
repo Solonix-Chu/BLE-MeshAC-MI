@@ -52,7 +52,7 @@ static void button_single_click_cb(void *button_handle, void *usr_data)
         event = s_button_events[*button_id];
     }
     
-    ESP_LOGD(TAG, "Button %d single click", *button_id);
+    ESP_LOGI(TAG, "Button %d single click -> event %d", *button_id, event);
     s_event_callback(event, s_user_data);
 }
 
@@ -65,7 +65,7 @@ static void button_double_click_cb(void *button_handle, void *usr_data)
         return;
     }
     
-    ESP_LOGD(TAG, "Button %d double click", *button_id);
+    ESP_LOGI(TAG, "Button %d double click -> event %d", *button_id, DC_EVENT_CENTER_DOUBLE_CLICK);
     s_event_callback(DC_EVENT_CENTER_DOUBLE_CLICK, s_user_data);
 }
 
@@ -78,7 +78,7 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
         return;
     }
     
-    ESP_LOGD(TAG, "Button %d long press", *button_id);
+    ESP_LOGI(TAG, "Button %d long press -> event %d", *button_id, DC_EVENT_CENTER_LONG_PRESS);
     s_event_callback(DC_EVENT_CENTER_LONG_PRESS, s_user_data);
 }
 
@@ -148,7 +148,8 @@ esp_err_t dc_buttons_init(void)
             }
         }
         
-        ESP_LOGD(TAG, "Button %d initialized on GPIO %d", i, s_button_gpios[i]);
+        ESP_LOGI(TAG, "Button %d initialized on GPIO %d (active_level=%d)",
+                 i, s_button_gpios[i], DEVICE_CONTROLLER_BUTTON_ACTIVE_LEVEL);
     }
     
     s_initialized = true;
@@ -205,4 +206,4 @@ esp_err_t dc_buttons_register_callback(void (*callback)(dc_event_t event, void *
     ESP_LOGI(TAG, "Button event callback registered");
     
     return ESP_OK;
-} 
+}

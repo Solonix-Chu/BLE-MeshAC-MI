@@ -1,0 +1,69 @@
+dependencies:
+  espressif/button:
+    component_hash: 95babe831403e301511a22a4dfcd599abcf32cf72c7f8ac5352a61662363c9ea
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 4.1.7
+  espressif/cmake_utilities:
+    component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.1.1
+  espressif/esp_lvgl_port:
+    component_hash: b43dc04720d126cbfe14d53a84787e4c24b7bd7f15468e224c930ad3ffb32258
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    - name: lvgl/lvgl
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^8
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.4.0
+  example_init:
+    dependencies: []
+    source:
+      path: /home/csc/.espressif/v5.5.3/esp-idf/examples/bluetooth/esp_ble_mesh/common_components/example_init
+      type: local
+    version: '*'
+  example_nvs:
+    dependencies: []
+    source:
+      path: /home/csc/.espressif/v5.5.3/esp-idf/examples/bluetooth/esp_ble_mesh/common_components/example_nvs
+      type: local
+    version: '*'
+  idf:
+    source:
+      type: idf
+    version: 5.5.3
+  lvgl:
+    dependencies: []
+    source:
+      path: /home/csc/Develop/BLE-MeshAC-MI/vendor_client/components/lvgl
+      type: local
+    version: 8.3.11
+direct_dependencies:
+- espressif/button
+- espressif/esp_lvgl_port
+- example_init
+- example_nvs
+manifest_hash: b9d8d473478e088cfff4f485f7045550623b84058d84c0ba0b5dc764b34923f2
+target: esp32s3
+version: 2.0.0

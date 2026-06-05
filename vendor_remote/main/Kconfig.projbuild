@@ -1,0 +1,21 @@
+menu "Smart Home Mesh Roles"
+
+config SH_ROLE_PROVISIONER_CONTROLLER
+    bool
+    default n
+
+config SH_ROLE_REMOTE_CONTROLLER
+    bool
+    default y
+
+config SH_ROLE_GATEWAY_RELAY
+    bool
+    default n
+
+config SH_BLE_BRIDGE_ENABLE
+    bool "Enable phone BLE GATT bridge"
+    default y
+    help
+        Expose device list, state notifications, and control writes through a normal BLE GATT service.
+
+endmenu

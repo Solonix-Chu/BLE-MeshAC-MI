@@ -86,6 +86,14 @@ static void connection_cb(bool is_connected, uint16_t client_addr, void *user_da
     board_led_operation(is_connected ? LED_STATE_SUCCESS : LED_STATE_PROV);
 }
 
+static void provisioned_cb(bool is_provisioned, uint16_t addr, void *user_data)
+{
+    (void)user_data;
+    ESP_LOGI(TAG, "Node provisioned state changed: %s addr=0x%04x",
+             is_provisioned ? "yes" : "no", addr);
+    board_led_operation(is_provisioned ? LED_STATE_SUCCESS : LED_STATE_PROV);
+}
+
 static void reset_requested_cb(void *user_data)
 {
     (void)user_data;
@@ -111,6 +119,7 @@ esp_err_t ac_server_init(void)
 
     sh_node_callbacks_t callbacks = {
         .feature_changed_cb = feature_changed_cb,
+        .provisioned_cb = provisioned_cb,
         .connection_cb = connection_cb,
         .reset_requested_cb = reset_requested_cb,
         .profile_changed_cb = profile_changed_cb,
@@ -122,7 +131,7 @@ esp_err_t ac_server_init(void)
         return err;
     }
 
-    board_led_operation(LED_STATE_PROV);
+    board_led_operation(sh_node_get_device_addr() != 0 ? LED_STATE_SUCCESS : LED_STATE_PROV);
     return ESP_OK;
 }
 
